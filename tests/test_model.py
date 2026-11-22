@@ -206,3 +206,25 @@ def test_get_batch_shifts_by_one():
     x, y = get_batch(data, 4, 16, rng)
     assert x.shape == y.shape == (4, 16)
     assert torch.equal(y[:, :-1], x[:, 1:])
+
+
+def test_export_size_is_browser_friendly(tmp_path):
+    """Base64 float16 export must be ~2 bytes/param (not decimal JSON)."""
+    torch.manual_seed(4)
+    model = GPT(SMALL)
+    tok = ByteBPE([])
+    path = export_checkpoint(model, SMALL, tok, tmp_path / "w.json")
+    n_params = sum(p.numel() for p in model.parameters())
+    ratio = path.stat().st_size / n_params
+    assert ratio < 3.0, f"export is {ratio:.1f} bytes/param, expected <3 (base64 float16)"
+    payload = json.loads(path.read_text())
+    assert payload["encoding"] == "raw"  # "raw" => base64-encoded float16 buffers
+    entry = payload["weights"]["wte"]
+    assert entry["encoding"] == "base64"
+
+    # both encodings load back identically
+    weights, _, _ = load_checkpoint(path)
+    plain_path = export_checkpoint(model, SMALL, tok, tmp_path / "w_plain.json", encoding="json")
+    weights_plain, _, _ = load_checkpoint(plain_path)
+    for name in weights:
+        assert weights[name].shape == weights_plain[name].shape

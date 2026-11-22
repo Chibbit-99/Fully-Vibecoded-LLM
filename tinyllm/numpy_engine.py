@@ -39,24 +39,41 @@ FORMAT = "tinyllm-weights-v1"
 # ---------------------------------------------------------------------------
 # exporter (imports torch lazily so the inference path never needs it)
 # ---------------------------------------------------------------------------
-def export_checkpoint(model, config: GPTConfig, tokenizer: ByteBPE, path: str | Path, dtype: str = "float16") -> Path:
-    import torch  # noqa: F401  (only needed for export)
+def export_checkpoint(
+    model,
+    config: GPTConfig,
+    tokenizer: ByteBPE,
+    path: str | Path,
+    dtype: str = "float16",
+    encoding: str = "raw",
+) -> Path:
+    """Serialise the model for the NumPy / JS engines.
+
+    ``encoding="raw"`` (default) stores each tensor as a float16 buffer encoded
+    in base64 -- ~2 bytes/parameter, so the 3.5M-parameter model is ~7 MB and
+    loads in the browser in one fetch.  ``encoding="json"`` writes plain
+    decimal arrays, useful for debugging and small test models.
+    """
+    import base64
 
     path = Path(path)
     state = model.state_dict_for_export()
     np_dtype = np.float16 if dtype == "float16" else np.float32
     weights: Dict[str, Any] = {}
     for name, tensor in state.items():
-        arr = tensor.detach().to("cpu").float().numpy()
-        if name == "wte":  # round-trip through the chosen dtype
-            arr = arr.astype(np_dtype).astype(np.float32)
-        weights[name] = {
-            "shape": list(arr.shape),
-            "data": arr.astype(np_dtype).reshape(-1).tolist(),
-        }
+        arr = tensor.detach().to("cpu").float().numpy().astype(np_dtype)
+        entry: Dict[str, Any] = {"shape": list(arr.shape)}
+        if encoding == "raw":
+            entry["encoding"] = "base64"
+            entry["data"] = base64.b64encode(np.ascontiguousarray(arr).tobytes()).decode("ascii")
+        else:
+            entry["data"] = arr.reshape(-1).tolist()
+        weights[name] = entry
+
     payload = {
         "format": FORMAT,
         "dtype": dtype,
+        "encoding": encoding,
         "config": config.to_dict(),
         "tokenizer": tokenizer.to_dict(),
         "weights": weights,
@@ -64,6 +81,18 @@ def export_checkpoint(model, config: GPTConfig, tokenizer: ByteBPE, path: str | 
     with open(path, "w") as f:
         json.dump(payload, f, separators=(",", ":"))
     return path
+
+
+def _decode_tensor(entry: Dict[str, Any]) -> np.ndarray:
+    """Turn one weight entry into a float32 array (either encoding)."""
+    shape = tuple(entry["shape"])
+    if entry.get("encoding") == "base64":
+        import base64
+
+        raw = base64.b64decode(entry["data"])
+        arr = np.frombuffer(raw, dtype=np.float16)
+        return arr.astype(np.float32).reshape(shape)
+    return np.asarray(entry["data"], dtype=np.float32).reshape(shape)
 
 
 def load_checkpoint(path: str | Path) -> tuple[Dict[str, np.ndarray], GPTConfig, ByteBPE]:
@@ -78,10 +107,7 @@ def load_checkpoint(path: str | Path) -> tuple[Dict[str, np.ndarray], GPTConfig,
         payload = json.load(f)
     if payload.get("format") != FORMAT:
         raise ValueError(f"unsupported checkpoint format: {payload.get('format')!r}")
-    weights = {
-        name: np.asarray(t["data"], dtype=np.float32).reshape(t["shape"])
-        for name, t in payload["weights"].items()
-    }
+    weights = {name: _decode_tensor(t) for name, t in payload["weights"].items()}
     return weights, GPTConfig.from_dict(payload["config"]), ByteBPE.from_dict(payload["tokenizer"])
 
 

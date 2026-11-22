@@ -37,11 +37,14 @@ jobs:
           mkdir -p _site/model
           cp -r web/. _site/
           cp model/weights.json _site/model/weights.json
-          [ -f model/meta.json ] && cp model/meta.json _site/model/meta.json || true
-          [ -f model/loss_curve.svg ] && cp model/loss_curve.svg _site/model/ || true
-          cat > _site/.nojekyll <<< ""
+          if [ -f model/meta.json ]; then cp model/meta.json _site/model/meta.json; fi
+          touch _site/.nojekyll
 
-      - uses: actions/configure-pages@v5
+      - name: Enable Pages (idempotent)
+        uses: actions/configure-pages@v5
+        with:
+          enablement: true
+
       - uses: actions/upload-pages-artifact@v3
         with:
           path: _site

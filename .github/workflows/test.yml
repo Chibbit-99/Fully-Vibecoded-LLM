@@ -35,3 +35,20 @@ jobs:
 
       - name: Server smoke test
         run: pytest tests/test_server.py -q
+
+  browser-engine:
+    name: Browser engine (Node)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Worker smoke test (needs committed weights)
+        run: |
+          if [ -f model/weights.json ]; then
+            node scripts/worker_smoke.mjs model/weights.json
+          else
+            echo "::notice::no model/weights.json yet — skipping"
+          fi

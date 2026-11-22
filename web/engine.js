@@ -17,6 +17,48 @@
 
 const GELU_C = 0.7978845608028654; // sqrt(2/pi)
 
+/**
+ * Decode one weight tensor. Two encodings are supported:
+ *   { shape, encoding: "base64", data }  -> float16 buffer, ~2 bytes/param
+ *   { shape, data: [...] }               -> plain decimal array (debug/small models)
+ * Returns a flat Float32Array in row-major order.
+ */
+export function decodeTensor(entry) {
+  if (entry instanceof Float32Array) return entry;
+  if (Array.isArray(entry)) return Float32Array.from(entry);
+  const count = entry.shape.reduce((a, b) => a * b, 1);
+  if (entry.encoding === "base64") {
+    const binary = atob(entry.data);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    const half = new Uint16Array(bytes.buffer, bytes.byteOffset, binary.length / 2);
+    const out = new Float32Array(count);
+    for (let i = 0; i < count; i++) out[i] = halfToFloat(half[i]);
+    return out;
+  }
+  const out = new Float32Array(count);
+  for (let i = 0; i < count; i++) out[i] = entry.data[i];
+  return out;
+}
+
+const _f32 = new Float32Array(1);
+const _u32 = new Uint32Array(_f32.buffer);
+
+/** IEEE 754 half-precision (float16) -> float32. */
+export function halfToFloat(h) {
+  const sign = (h & 0x8000) >> 15;
+  const exp = (h & 0x7c00) >> 10;
+  const frac = h & 0x03ff;
+  if (exp === 0) {
+    // subnormal (or zero)
+    const v = frac === 0 ? 0 : frac * Math.pow(2, -24);
+    return sign ? -v : v;
+  }
+  if (exp === 31) return frac ? NaN : sign ? -Infinity : Infinity;
+  _u32[0] = (sign << 31) | ((exp + 112) << 23) | (frac << 13);
+  return _f32[0];
+}
+
 export function gelu(x) {
   // tanh approximation, matching torch.nn.functional.gelu(approximate="tanh")
   return 0.5 * x * (1 + Math.tanh(GELU_C * (x + 0.044715 * x * x * x)));
@@ -86,10 +128,7 @@ export class TinyGPT {
     this.weights = {};
     const raw = payload.weights;
     for (const name of Object.keys(raw)) {
-      const entry = raw[name];
-      // already a Float32Array (binary format) or a plain array (json format)
-      const data = entry instanceof Float32Array ? entry : Float32Array.from(entry.data ?? entry);
-      this.weights[name] = data;
+      this.weights[name] = decodeTensor(raw[name]);
     }
     const cfg = this.config;
     this.cfg = {

@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -262,7 +263,12 @@ else:  # pragma: no cover
 # ---------------------------------------------------------------------------
 def main(argv: List[str] | None = None) -> int:
     p = argparse.ArgumentParser(description="Serve TinyLLM (FastAPI + NumPy engine)")
-    p.add_argument("--checkpoint", type=Path, default=DEFAULT_CHECKPOINT)
+    p.add_argument(
+        "--checkpoint",
+        type=Path,
+        default=Path(os.environ.get("TINYLLM_CHECKPOINT", DEFAULT_CHECKPOINT)),
+        help="weights.json (or .npz) produced by scripts/train.py",
+    )
     p.add_argument("--host", default="0.0.0.0")
     p.add_argument("--port", type=int, default=8000)
     p.add_argument("--reload", action="store_true")

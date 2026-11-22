@@ -1,0 +1,7 @@
+{
+  "steps": 200,
+  "val_loss": 3.5041,
+  "bits_per_byte": 1.83,
+  "params": 3536384,
+  "tokens_seen": 1228800
+}
