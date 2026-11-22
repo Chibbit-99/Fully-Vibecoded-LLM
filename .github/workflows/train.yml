@@ -1,0 +1,208 @@
+name: Train TinyLLM
+
+# Training runs on GitHub-hosted CPU runners. A full run takes ~30-45 minutes
+# on a 2-core runner; the workflow commits the trained artefacts back to the
+# branch so the demo and the API pick them up immediately.
+
+on:
+  workflow_dispatch:
+    inputs:
+      max_steps:
+        description: "Optimiser steps"
+        required: false
+        default: "3000"
+      batch_size:
+        description: "Micro batch size"
+        required: false
+        default: "16"
+      grad_accum:
+        description: "Gradient accumulation steps"
+        required: false
+        default: "2"
+      seed:
+        description: "Random seed"
+        required: false
+        default: "1337"
+      time_budget_minutes:
+        description: "Safety stop (minutes). 0 = no limit"
+        required: false
+        default: "120"
+      clear_checkpoints:
+        description: "Delete cached checkpoints before training"
+        type: boolean
+        required: false
+        default: false
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/train.yml"
+  schedule:
+    # weekly retrain so the artefact stays reproducible from a clean runner
+    - cron: "0 3 * * 1"
+
+concurrency:
+  group: train-tinyllm-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+env:
+  PYTHONUNBUFFERED: "1"
+  OMP_NUM_THREADS: "2"
+  MKL_NUM_THREADS: "2"
+
+jobs:
+  train:
+    name: Train + export
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies (CPU PyTorch)
+        run: |
+          python -m pip install --upgrade pip
+          pip install --index-url https://download.pytorch.org/whl/cpu torch
+          pip install numpy pytest
+
+      - name: Hugging Face style repo info
+        run: |
+          echo "runner cpus: $(nproc)"
+          python -c "import torch; print('torch', torch.__version__, 'threads', torch.get_num_threads())"
+
+      # ---- resumable checkpoint cache ---------------------------------
+      # Restores last.pt so interrupted runs can continue instead of restarting.
+      - name: Restore checkpoint cache
+        if: ${{ inputs.clear_checkpoints != true }}
+        uses: actions/cache/restore@v4
+        with:
+          path: runs/main
+          key: tinyllm-ckpt-${{ github.ref_name }}-${{ inputs.max_steps || '3000' }}-${{ inputs.seed || '1337' }}-${{ github.run_id }}
+          restore-keys: |
+            tinyllm-ckpt-${{ github.ref_name }}-${{ inputs.max_steps || '3000' }}-${{ inputs.seed || '1337' }}-
+
+      # ---- reuse the committed tokenizer (deterministic) --------------
+      - name: Prepare output directory
+        run: |
+          mkdir -p runs/main
+          if [ -f model/tokenizer.json ] && [ ! -f runs/main/tokenizer.json ]; then
+            cp model/tokenizer.json runs/main/tokenizer.json
+            echo "reusing committed tokenizer"
+          fi
+          ls -la runs/main || true
+
+      - name: Train
+        id: train
+        env:
+          MAX_STEPS: ${{ inputs.max_steps || '3000' }}
+          BATCH_SIZE: ${{ inputs.batch_size || '16' }}
+          GRAD_ACCUM: ${{ inputs.grad_accum || '2' }}
+          SEED: ${{ inputs.seed || '1337' }}
+          TIME_BUDGET: ${{ inputs.time_budget_minutes || '120' }}
+        run: |
+          RESUME=""
+          if [ -f runs/main/last.pt ]; then
+            echo "::notice::resuming from cached runs/main/last.pt"
+            RESUME="--resume runs/main/last.pt"
+          fi
+          python scripts/train.py \
+            --out-dir runs/main \
+            --config configs/small.json \
+            --tokenizer runs/main/tokenizer.json \
+            --max-steps "$MAX_STEPS" \
+            --batch-size "$BATCH_SIZE" \
+            --grad-accum "$GRAD_ACCUM" \
+            --seed "$SEED" \
+            --time-budget "$TIME_BUDGET" \
+            --eval-interval 250 \
+            --log-interval 50 \
+            --save-interval 250 \
+            $RESUME
+
+      - name: Show training summary
+        run: |
+          echo "### Training summary" >> $GITHUB_STEP_SUMMARY
+          python - <<'PY' >> $GITHUB_STEP_SUMMARY
+          import json
+          m = json.load(open('runs/main/train_log.json'))['meta']
+          print("")
+          print("| | |")
+          print("|---|---|")
+          for k in ("params", "params_non_embedding", "steps", "val_loss", "best_val_loss", "bits_per_byte",
+                    "tokens_seen", "train_seconds", "vocab_size", "block_size"):
+              print(f"| {k} | {m.get(k):,} |" if isinstance(m.get(k), (int, float)) else f"| {k} | {m.get(k)} |")
+          print("")
+          print("**samples**")
+          print("```")
+          print(open('runs/main/samples.txt').read()[:3000])
+          print("```")
+          PY
+          cat runs/main/train_log.json
+
+      # ---- validate before publishing --------------------------------
+      - name: Run test suite
+        run: pytest tests -q
+
+      # ---- publish artefacts -----------------------------------------
+      - name: Publish model artefacts
+        run: |
+          set -euo pipefail
+          cp runs/main/weights.json model/weights.json
+          cp runs/main/config.json model/config.json
+          cp runs/main/tokenizer.json model/tokenizer.json
+          cp runs/main/loss_curve.svg model/loss_curve.svg
+          cp runs/main/samples.txt model/samples.txt
+          python - <<'PY'
+          import json
+          log = json.load(open('runs/main/train_log.json'))
+          meta = log['meta']
+          meta['history'] = log['history']
+          json.dump(meta, open('model/meta.json', 'w'), indent=2)
+          PY
+          du -h model/* | sort -h
+
+      - name: Save checkpoint cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: runs/main
+          key: tinyllm-ckpt-${{ github.ref_name }}-${{ inputs.max_steps || '3000' }}-${{ inputs.seed || '1337' }}-${{ github.run_id }}
+
+      - name: Upload run artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: tinyllm-${{ github.run_number }}
+          path: |
+            model/weights.json
+            model/meta.json
+            model/loss_curve.svg
+            model/samples.txt
+            runs/main/train_log.json
+          retention-days: 90
+
+      - name: Commit trained model
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add model/ runs/main/train_log.json
+          if git diff --cached --quiet; then
+            echo "no model changes to commit"
+            exit 0
+          fi
+          PARAMS=$(python -c "import json;print(f\"{json.load(open('model/meta.json'))['params']:,}\")")
+          STEPS=$(python -c "import json;print(json.load(open('model/meta.json'))['steps'])")
+          VAL=$(python -c "import json;print(json.load(open('model/meta.json'))['val_loss'])")
+          git commit -m "train: ${PARAMS} params, ${STEPS} steps, val loss ${VAL} [skip ci]"
+          git push origin HEAD:${{ github.ref_name }}

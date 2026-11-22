@@ -1,0 +1,17 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+
+# Training scratch / checkpoints (large, machine-specific)
+runs/
+*.pt
+*.bin.tmp
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+node_modules/
