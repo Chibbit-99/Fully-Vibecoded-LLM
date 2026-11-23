@@ -46,10 +46,10 @@ It does not know any facts. It writes Shakespeare-flavoured English at a charact
 | Vocabulary | 1280 byte-BPE tokens |
 | Optimiser steps | **500** |
 | Tokens seen | 4.10M (4,096,000) |
-| Validation loss | **3.0694** nats/token |
-| Bits per byte | **2.301** (8.0 = random bytes) |
-| Training time | 8 min on CPU 8,562 tok/s |
-| Loss trajectory | 3.983 → 3.057 |
+| Validation loss | **3.0766** nats/token |
+| Bits per byte | **2.307** (8.0 = random bytes) |
+| Training time | 6 min on CPU 11,872 tok/s |
+| Loss trajectory | 3.983 → 3.065 |
 
 <p align="center"><img src="model/loss_curve.svg" alt="training and validation loss" width="680"></p>
 <p align="center"><sub>train loss in blue, validation loss in green — rendered by scripts/train.py</sub></p>
@@ -59,14 +59,16 @@ It does not know any facts. It writes Shakespeare-flavoured English at a charact
 
 ```
 ROMEO:
-It thou w the seclif
-And thou art dared by your hearts dewant to our gates,
-And should make thee thee this decried o'er thee;
-And thy mawomin the cir rector wars,
-And I have reven my heart will thou grock
-From Edward our love and devil and thou wilt lif love!
-My soose thou Jame Jaithst will thou love we from that I thy Richard, I thy love,
-I thou God art thou I thou hast thou art thou thou wainst Richard thou 
+It see I will did I am conce
+And see this doose dish thee have to give thee.
+
+LADY CAPULET:
+This most brother's lord, my lord, gentle good heart;
+I do not not devil thou hear this good mother
+Signonly my soul so should have I did for
+Sainted I did I and see me his I,
+And thou did art am thou thou did dost Warwick thou lovest I art say, am hastewastings,
+To unin thou God him thou I thou hast thou art thou thou 
 ```
 
 </details>
