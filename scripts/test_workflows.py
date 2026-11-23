@@ -41,10 +41,16 @@ STUBS = {
     "Checkout": "echo '[stub] checkout skipped'",
     # test runners need the CI environment (installed pytest / node deps)
     "Fast unit tests (tokenizer + model shapes)": "echo '[stub] pytest skipped'",
+    "Fast unit tests (tokenizer + model shapes + Spore)": "echo '[stub] pytest skipped'",
     "Cross-engine parity (needs trained weights)": "echo '[stub] parity skipped'",
     "Server smoke test": "echo '[stub] server tests skipped'",
     "Run fast test suite": "echo '[stub] pytest skipped'",
     "Runner info": "echo '[stub] runner info skipped'",
+    # Spore training is a multi-hour job; the harness only checks the shell
+    "Train chunk": "echo '[stub] spore training skipped'",
+    "Build corpus (cached between runs)": "echo '[stub] corpus build skipped'",
+    "Build the retrieval factbook": "echo '[stub] factbook build skipped'",
+    "Build the Spore corpus": "echo '[stub] corpus build skipped'",
 }
 
 EXPR = re.compile(r"\$\{\{[^}]*\}\}")

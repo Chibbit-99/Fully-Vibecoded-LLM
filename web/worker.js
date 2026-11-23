@@ -9,6 +9,7 @@ import { TinyGPT } from "./engine.js";
 let model = null;
 let tokenizer = null;
 let busy = false;
+let cancelled = false;
 
 function mulberry32(seed) {
   let a = seed >>> 0;
@@ -38,6 +39,11 @@ self.onmessage = (event) => {
     return;
   }
 
+  if (msg.type === "cancel") {
+    cancelled = true;
+    return;
+  }
+
   if (msg.type === "generate") {
     if (!model) {
       self.postMessage({ type: "error", message: "model not loaded" });
@@ -45,8 +51,18 @@ self.onmessage = (event) => {
     }
     if (busy) return;
     busy = true;
+    cancelled = false;
     try {
       const { prompt, maxTokens, temperature, topK, topP, seed } = msg;
+      // ids of control tokens that end a turn (a chat model is trained to emit
+      // <|end|>; <|assistant|>/<|user|> appearing means it went off script and
+      // we must stop before it writes the user's next line)
+      const stopIds = new Set(
+        (msg.stopTokens || []).map((t) =>
+          tokenizer.specialIds && tokenizer.specialIds.has(t) ? tokenizer.specialIds.get(t) : -1
+        ).filter((i) => i >= 0)
+      );
+      let stopped = false;
       const rng = msg.deterministic ? () => 1e-9 : mulberry32(seed ?? 1234);
       const ids = tokenizer.encode(prompt);
       // keep the prompt inside the context window (leave room to generate)
@@ -71,6 +87,11 @@ self.onmessage = (event) => {
           topP: topP || null,
           rng,
         });
+        if (stopIds.has(next)) {
+          stopped = true;
+          produced++;  // counts toward the token budget but is not shown
+          break;
+        }
         produced++;
         const piece = tokenizer.decode([next]);
         pieces.push({ id: next, text: piece });
@@ -84,6 +105,7 @@ self.onmessage = (event) => {
             pieces: pieces.slice(),
           });
         }
+        if (cancelled) { stopped = true; break; }
         if (produced >= windowLeft) break;
         logits = model.forward([next]);
         // keep the UI responsive on long generations
@@ -98,6 +120,7 @@ self.onmessage = (event) => {
         text,
         produced,
         pieces,
+        stopped,
         promptTokens: ids.length,
         ms: Math.round(ms),
         tokPerSec: +(produced / (ms / 1000)).toFixed(2),

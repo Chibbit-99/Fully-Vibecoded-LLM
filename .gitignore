@@ -9,6 +9,12 @@ __pycache__/
 runs/
 *.pt
 
+# Generated corpora (data/spore/). Rebuilt in ~2 s from the committed raw text
+# by `python scripts/build_spore_data.py`; CI does this before training and
+# before deploying the demo. Keeping them out of git avoids 35 MB of derived
+# text that would drift from the builder.
+data/spore/
+
 # Editor / OS
 .DS_Store
 .idea/
