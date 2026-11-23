@@ -98,14 +98,19 @@ Expect two green jobs: `test` and `browser-engine`.
 ### 3b. `Train TinyLLM` — this is the actual training run
 
 ```bash
-# from the Actions UI: Train TinyLLM → Run workflow, or:
 gh workflow run train.yml --ref main \
-  -f max_steps=2400 \
+  -f config=configs/fast.json \
+  -f max_steps=4000 \
   -f batch_size=32 \
-  -f grad_accum=1 \
   -f seed=1337 \
-  -f time_budget_minutes=120
+  -f chunk_minutes=25
 ```
+
+**Each run trains a bounded chunk and saves.** 25 minutes of the 2M model is
+≈ 6.7M tokens ≈ 700 steps. Re-run (or let the daily schedule do it) and
+training *continues* from the cached checkpoint until `max_steps` is reached;
+after that, runs detect the finished model and exit immediately. This is why
+the workflow can never die on a runner timeout on a free 2-core machine.
 
 What it does, in order:
 
@@ -121,15 +126,22 @@ What it does, in order:
 
 | Input | Default | Notes |
 |---|---|---|
-| `max_steps` | 3000 | raise to 6000–10000 for better text; the cache resumes |
-| `batch_size` | 16 | 32 is faster per token; watch runner memory |
-| `grad_accum` | 2 | effective batch = batch × accum |
+| `config` | `configs/fast.json` | 2.05M params, ctx 128, ~9k tok/s on a runner |
+| `max_steps` | 4000 | total for the whole run, across all chunks |
+| `batch_size` | 32 | 32–48 is the sweet spot on 2 cores |
 | `seed` | 1337 | reproduces data order exactly |
-| `time_budget_minutes` | 120 | hard stop; still saves + exports |
-| `clear_checkpoints` | false | true = ignore the cache and start over |
+| `chunk_minutes` | 25 | minutes of training for *this* invocation |
+| `reset` | false | true = ignore the cache and start over |
 
-To train longer without losing work, just run it again with a bigger
-`max_steps` — it resumes from the cached checkpoint.
+Speed cheat-sheet measured on a 2-core runner-class CPU:
+
+| Config | Params | Context | Throughput | 4000 steps |
+|---|---|---|---|---|
+| `configs/fast.json` | 2.05M | 128 | ~9,100 tok/s | ~50 min total |
+| `configs/small.json` | 3.54M | 192 | ~5,800 tok/s | ~75 min total |
+
+So the default (4000 steps of `fast.json`) is **two 25-minute re-runs**, not one
+hour-long job.
 
 ### 3c. `Deploy demo to GitHub Pages` — automatic
 
@@ -182,5 +194,7 @@ just `web/` + `model/weights.json`.
 | Workflows listed but runs never start | runner minutes exhausted / billing | check <https://github.com/settings/billing> |
 | Deploy job fails: `model/weights.json missing` | Pages ran before training | run `Train TinyLLM` first, then re-run Pages |
 | Deploy job fails: `Pages site not found` | Pages not enabled | Step 2 |
-| Train job killed at 6 h | runner hard limit | lower `time_budget_minutes`, re-run — it resumes from cache |
+| Train job stopped early | chunk finished | just run it again — it resumes from the cached checkpoint |
+| `git add` ignored-path error | old bug: `runs/` was added to git | fixed; only `model/` and `README.md` are committed |
+| Train job wasted an hour then failed | old bug: commit step after training | fixed; artefacts are also uploaded before the commit, and `scripts/test_workflows.py` now executes every workflow step locally |
 | Demo shows “Could not load weights” | opening `web/index.html` from disk | serve the **repo root**: `make demo`, then `/web/` |

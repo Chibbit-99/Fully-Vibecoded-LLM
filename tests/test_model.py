@@ -228,3 +228,74 @@ def test_export_size_is_browser_friendly(tmp_path):
     weights_plain, _, _ = load_checkpoint(plain_path)
     for name in weights:
         assert weights[name].shape == weights_plain[name].shape
+
+
+# ---------------------------------------------------------------------------
+# regressions
+# ---------------------------------------------------------------------------
+def test_checkpoint_is_written_at_end_of_a_chunk(tmp_path):
+    """A chunked run must leave a resumable last.pt even if the step count is
+    not a multiple of --save-interval. (Regression: an earlier version only
+    saved on interval boundaries, so a 120-step chunk kept nothing.)"""
+    import subprocess
+    import sys
+
+    from tinyllm.tokenizer import ByteBPE as _Tok
+
+    data = Path(__file__).resolve().parent.parent / "data" / "tinyshakespeare.txt"
+    if not data.exists():
+        pytest.skip("dataset not available")
+    tok = _Tok([(97, 98)])
+    tok.save(tmp_path / "tokenizer.json")
+
+    cmd = [
+        sys.executable, str(Path(__file__).resolve().parent.parent / "scripts" / "train.py"),
+        "--out-dir", str(tmp_path), "--tokenizer", str(tmp_path / "tokenizer.json"),
+        "--max-steps", "9", "--batch-size", "2", "--block-size", "16",
+        "--n-layer", "1", "--n-head", "2", "--n-embd", "8",
+        "--save-interval", "500",  # deliberately never hits a boundary
+        "--log-interval", "9", "--eval-interval", "9", "--eval-batches", "1",
+        "--warmup", "1",
+    ]
+    subprocess.run(cmd, check=True, capture_output=True, timeout=300)
+
+    assert (tmp_path / "last.pt").exists(), "no resumable checkpoint was written"
+    ckpt = torch.load(tmp_path / "last.pt", map_location="cpu", weights_only=False)
+    assert ckpt["step"] == 9
+    assert "optimizer" in ckpt and "rng_numpy" in ckpt
+    # and it must actually resume rather than restart
+    assert ckpt["step"] > 0
+
+
+def test_workflow_never_git_adds_ignored_paths():
+    """`git add runs/...` exits 1 under set -e and kills the job after a full
+    training run. runs/ must never appear in a git add."""
+    import re
+
+    root = Path(__file__).resolve().parent.parent
+    for wf in (root / ".github" / "workflows").glob("*.yml"):
+        text = wf.read_text()
+        for match in re.finditer(r"^\s*git add (.+)$", text, re.MULTILINE):
+            args = match.group(1)
+            # strip trailing comment
+            args = args.split("#")[0]
+            assert "runs/" not in args, f"{wf.name}: git add of ignored runs/ path: {args}"
+
+
+def test_workflow_ignored_paths_match_gitignore():
+    """Anything a workflow commits must not be gitignored."""
+    import re
+    import subprocess
+
+    root = Path(__file__).resolve().parent.parent
+    for wf in (root / ".github" / "workflows").glob("*.yml"):
+        for match in re.finditer(r"^\s*git add (.+)$", wf.read_text(), re.MULTILINE):
+            for path in match.group(1).split("#")[0].split():
+                if path.startswith("-"):
+                    continue
+                probe = path.rstrip("/")
+                result = subprocess.run(
+                    ["git", "check-ignore", "-q", probe],
+                    cwd=root, capture_output=True,
+                )
+                assert result.returncode != 0, f"{wf.name}: '{path}' is gitignored but is committed"

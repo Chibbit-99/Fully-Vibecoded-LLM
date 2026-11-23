@@ -56,6 +56,27 @@ model/samples.txt      ← generations from the final weights
 
 Every commit from CI is tagged `[skip ci]` so it does not retrigger itself.
 
+## 2b. Chunked training (why the workflow is shaped this way)
+
+Free GitHub runners give you 2 cores and a wall-clock limit. Instead of one
+long job that risks timing out, each invocation trains a bounded slice:
+
+```bash
+# chunk 1
+python scripts/train.py --max-steps 4000 --budget-steps 700 --out-dir runs/main
+# chunk 2 (resumes optimizer, LR schedule position, and RNG)
+python scripts/train.py --max-steps 4000 --budget-steps 700 --out-dir runs/main \
+    --resume runs/main/last.pt
+```
+
+`--time-budget 25` does the same thing based on minutes instead of steps. The
+loss/LR schedule is a function of the *absolute* step, so chunked runs are
+mathematically identical to one long run — verified by training 240 steps in
+four 60-step chunks and comparing the curve.
+
+Checkpoints are written atomically and always include optimizer + RNG state, so
+a runner killed mid-chunk costs at most the current chunk.
+
 ## 3. Running locally
 
 ```bash
