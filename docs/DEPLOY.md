@@ -1,7 +1,18 @@
 # Deployment & first-run checklist
 
-You have **one** thing to do that I cannot: enable GitHub Actions on the
-repository. Everything else is already wired up.
+> **Update after the merge to `main`:** GitHub Actions turned out to be
+> **already enabled**. My earlier `total_count: 0` reading was misleading:
+> `push`-triggered workflows only register once their YAML exists on the
+> **default branch**, and until then the REST API reports no workflows at all.
+> Merging PR #1 fixed it — all three workflows are now `active` and have run:
+>
+> | Workflow | Result on first push to `main` |
+> |---|---|
+> | **Tests** | ✅ success (44 unit + parity + API tests) |
+> | **Train TinyLLM** | ✅ started automatically, training on a runner |
+> | **Deploy demo to GitHub Pages** | ❌ `Resource not accessible by integration` — **needs one manual step, below** |
+
+So there is now exactly **one** manual action left: enabling GitHub Pages.
 
 ---
 
@@ -20,39 +31,20 @@ workflows**, because Actions is disabled on the repo.
 
 ---
 
-## Step 1 — enable GitHub Actions (required)
+## Step 1 — GitHub Actions: already working ✅
 
-I get this when I ask the API:
+Confirmed by the API after merging:
 
 ```
-gh api repos/Chibbit-99/Fully-Vibecoded-LLM/actions/workflows
-→ {"total_count": 0, "workflows": []}          # workflows ignore exists
-gh workflow run train.yml
-→ HTTP 404                                      # dispatch is blocked
-gh api -X PUT .../actions/permissions
-→ HTTP 403 Resource not accessible by integration
+gh api repos/Chibbit-99/Fully-Vibecoded-LLM/actions/workflows --jq '.total_count'
+→ 3
 ```
 
-`total_count: 0` with valid YAML committed means **Actions is disabled at the
-repository or account level** — GitHub never even reads the workflow files.
+All three workflows are `active` and ran on the merge commit. Nothing to do
+here, unless a future run reports *"Actions has been disabled"* — in that case
+**Settings → Actions → General → Allow all actions** → **Save**.
 
-**Do this, in order:**
-
-1. **Settings → Actions → General** (repo settings).
-   - Under *Actions permissions* select **Allow all actions and reusable
-     workflows**.
-   - Click **Save**.
-2. Go to the **Actions** tab of the repo.
-   - If there's a banner saying actions are disabled or that billing/identity
-     verification is required, follow its link. For personal accounts that is
-     usually <https://github.com/settings/billing> → ensure Actions are
-     allowed, and confirm your e-mail is verified at
-     <https://github.com/settings/emails>.
-3. If the Actions tab still shows nothing, push any commit to `main` (I can do
-   that for you after merging — a no-op commit forces GitHub to re-scan
-   `.github/workflows/`).
-
-Verify it worked — this must now print **3**:
+Verify at any time:
 
 ```bash
 gh api repos/Chibbit-99/Fully-Vibecoded-LLM/actions/workflows --jq '.total_count'
@@ -68,15 +60,34 @@ You should see these three workflows listed:
 
 ---
 
-## Step 2 — enable GitHub Pages (required for the public demo)
+## Step 2 — enable GitHub Pages ← **the one thing only you can do**
 
-**Settings → Pages →** under *Build and deployment* set **Source: GitHub
-Actions**.
+The deploy run failed with:
 
-(The deploy workflow also passes `enablement: true`, so it can create the site
-itself — but the setting must not be blocked.)
+```
+Create Pages site failed.
+HttpError: Resource not accessible by integration
+  https://docs.github.com/rest/pages/pages#create-a-apiname-pages-site
+```
 
-Result: `https://chibbit-99.github.io/Fully-Vibecoded-LLM/`
+That is GitHub refusing to let the workflow's `GITHUB_TOKEN` create the Pages
+site — a deliberate guard. I tried both the API and `configure-pages`'s
+`enablement: true`; both are blocked for tokens minted by the GitHub App
+integration. **A repository owner must flip the switch once:**
+
+1. Open **Settings → Pages** on <https://github.com/Chibbit-99/Fully-Vibecoded-LLM/settings/pages>.
+2. Under **Build and deployment → Source**, choose **GitHub Actions**.
+3. Save. No workflow file change is needed — just re-run the deploy:
+
+```bash
+gh run rerun 45089447109          # or: gh workflow run pages.yml --ref main
+```
+
+Result: <https://chibbit-99.github.io/Fully-Vibecoded-LLM/>
+
+If you would rather not use Pages at all, the demo is pure static files —
+hosting `web/` + `model/weights.json` on Netlify, Cloudflare Pages or S3 works
+identically (both path layouts are supported).
 
 ---
 
