@@ -27,18 +27,50 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Build the retrieval factbook
+        # data/spore/ is generated (gitignored); the browser demo needs the
+        # factbook to ground its answers, so rebuild it here.
+        run: python scripts/build_spore_data.py
+
       - name: Check model artefacts exist
         run: |
           test -f model/weights.json || (echo "::error::model/weights.json missing — run the Train workflow first" && exit 1)
           du -h model/weights.json
+          # Spore is optional: the page degrades gracefully without it, but say
+          # so loudly in the log rather than shipping a dead demo link.
+          if ls model/spore/*/weights.json >/dev/null 2>&1; then
+            echo "Spore checkpoints:"; ls -la model/spore/*/weights.json
+          else
+            echo "::warning::no model/spore/*/weights.json — the Spore demo will show a setup message"
+          fi
 
       - name: Assemble site
         run: |
+          set -euo pipefail
           mkdir -p _site/model
           cp -r web/. _site/
           cp model/weights.json _site/model/weights.json
           if [ -f model/meta.json ]; then cp model/meta.json _site/model/meta.json; fi
+
+          # Spore chat models + the factbook the browser retrieves from
+          if [ -d model/spore ]; then
+            mkdir -p _site/model/spore
+            cp -r model/spore/. _site/model/spore/
+          fi
+          if [ -f data/spore/factbook.json ]; then
+            mkdir -p _site/data/spore
+            cp data/spore/factbook.json _site/data/spore/factbook.json
+          fi
+          # the Pages layout puts everything at the site root, so spore.html
+          # must also be reachable at index.html for convenience
+          if [ -f _site/spore.html ]; then cp _site/spore.html _site/spore/index.html 2>/dev/null || true; fi
           touch _site/.nojekyll
+          du -sh _site _site/model 2>/dev/null || true
 
       - name: Enable Pages (idempotent)
         uses: actions/configure-pages@v5

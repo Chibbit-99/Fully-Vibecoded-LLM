@@ -31,6 +31,8 @@ An experiment: **can an AI agent alone design, train and ship a language model?*
 
 It does not know any facts. It writes Shakespeare-flavoured English at a character level. That is exactly the point for an experiment about *building the machinery*, not about beating benchmarks.
 
+> **New: [Spore](#spore--models-that-answer-questions) — 12M and 36M chat models** trained on Wikipedia + TinyStories that can answer questions. Same from-scratch stack, two stages (pretrain → chat tuning), resumable across GitHub Actions jobs. [Jump to it ↓](#spore--models-that-answer-questions)
+
 <!-- TRAINING_METRICS -->
 ## Training results
 
@@ -140,6 +142,67 @@ python -m tinyllm tokenize "To be, or not to be"
 ```
 
 ---
+
+## Spore — models that answer questions
+
+TinyGPT continues Shakespeare. **Spore answers questions.** It is the same
+from-scratch stack with three additions: a bigger and more varied corpus, a
+chat-tuning stage, and retrieval so a small model can ground its answers in
+evidence instead of inventing them.
+
+| model | parameters | layers | width | context | vocab | weights |
+|---|---|---|---|---|---|---|
+| `spore-1-12M` | **12,000,000** | 6 | 384 | 512 | 3010 | ~24 MB |
+| `spore-1-36M` | **36,000,000** | 12 | 480 | 512 | 5210 | ~72 MB |
+
+The number in each name is the exact parameter count — `tests/test_spore.py`
+asserts it against the analytic formula *and* against PyTorch.
+
+**Data.** `scripts/build_spore_data.py` turns two committed public-domain
+corpora (WikiText-2, 10.8 MB of real Wikipedia; TinyStories, 5.2 MB of simple
+prose) into a 5.5 MB pretraining text, 18k extractive Q&A records and a 7k-passage
+retrieval factbook. No network access is needed to rebuild any of it.
+
+**Two stages.** Pretraining on prose, then supervised chat tuning where the loss
+is masked to the assistant's tokens only — the model is never trained to predict
+the question. Turns are delimited by control tokens the BPE can never produce by
+accident: `<|user|> … <|context|> … <|assistant|> … <|end|>`.
+
+**Retrieval, because 12M parameters cannot store the world.** At inference the
+server (and the browser) look up the best-matching passage with BM25, prepend it
+as a `<|context|>` block, and the model answers from it. `tinyllm/retrieval.py`
+and `web/retrieval.js` are ports of the same ranker and are tested to return
+identical results.
+
+**Resumable, because it takes longer than six hours.** Every GitHub Actions job
+is capped at 6 h, so training stops cleanly at `chunk_minutes`, saves weights +
+optimiser moments + RNG state, and the next run continues from that exact step.
+Four resuming chunks produce *bit-identical* weights to one uninterrupted run
+(`test_chunked_training_is_identical_to_one_run`).
+
+```bash
+# rebuild the corpus (~2 s, no network)
+python scripts/build_spore_data.py
+
+# train one chunk of stage 1, then stage 2 (usually driven by Actions)
+python scripts/train_spore.py --config configs/spore_12m.json \
+    --out-dir runs/spore-1-12M --stage pretrain --token-budget 40e6 --chunk-minutes 300
+python scripts/train_spore.py --config configs/spore_12m.json \
+    --out-dir runs/spore-1-12M --stage sft      --token-budget 12e6 --chunk-minutes 300
+
+# serve it (the browser demo is at /, options at /spore.html)
+python -m tinyllm.server --checkpoint spore-1-12M --port 8000
+```
+
+**Which workflow to run:** `Train Spore (12M / 36M)` in Actions, inputs
+`model=spore-1-12M` / `stage=pretrain`, then the same with `stage=sft`, then the
+36M model. Repeat a stage until the job summary says *FINISHED*; each re-run
+continues where the previous chunk stopped. The full guide, including measured
+throughput and memory, is in **[docs/SPORE.md](docs/SPORE.md)**.
+
+<!-- SPORE_METRICS -->
+_No Spore checkpoint has been trained yet. Run the **Train Spore (12M / 36M)** workflow — see [docs/SPORE.md](docs/SPORE.md).
+<!-- /SPORE_METRICS -->
 
 ## Training it yourself
 
@@ -251,21 +314,29 @@ tinyllm/              the library
   dataset.py          Tiny Shakespeare loading and batching
   server.py           FastAPI inference server
   cli.py              `python -m tinyllm ...`
+  sft.py              chat templates + masked SFT loss
+  retrieval.py        BM25 factbook used to ground Spore's answers
 scripts/
   train.py            CPU training + export + plots + samples
+  train_spore.py      two-stage, resumable Spore trainer
+  build_spore_data.py WikiText + TinyStories -> prose, Q&A, factbook
   download_data.py    fetch the dataset
   serve_web.py        static server for the demo
   js_parity.mjs       Node harness comparing JS to the Python reference
 web/                  zero-dependency browser demo
-  index.html, style.css, app.js
+  index.html, style.css, app.js     TinyGPT demo
+  spore.html, spore.js, spore.css   Spore chat demo
   engine.js           transformer forward pass in JavaScript
-  tokenizer.js        BPE port
+  tokenizer.js        BPE port (special tokens included)
+  retrieval.js        BM25 port, identical ranking to the Python version
   worker.js           Web Worker wrapper
 tests/                pytest suite (unit + cross-engine parity + API)
 configs/              model shapes
-data/                 tinyshakespeare.txt (public domain)
+data/                 tinyshakespeare.txt, raw_wikitext2.txt, raw_tinystories.txt
+  spore/              generated prose, qa.jsonl, factbook.json
 model/                trained artefacts (committed by CI)
-.github/workflows/    train.yml, test.yml, pages.yml
+  spore/<name>/       Spore checkpoints + meta + samples
+.github/workflows/    train.yml, train_spore.yml, test.yml, pages.yml
 ```
 
 ## Going bigger

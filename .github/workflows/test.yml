@@ -27,8 +27,13 @@ jobs:
           pip install --index-url https://download.pytorch.org/whl/cpu torch
           pip install numpy pytest pyyaml fastapi httpx
 
-      - name: Fast unit tests (tokenizer + model shapes)
-        run: pytest tests/test_model.py tests/test_tokenizer.py -q
+      - name: Build the Spore corpus
+        # data/spore/ is gitignored (it is derived), but the corpus-quality
+        # tests need it.  The build is deterministic and takes ~2 seconds.
+        run: python scripts/build_spore_data.py
+
+      - name: Fast unit tests (tokenizer + model shapes + Spore)
+        run: pytest tests/test_model.py tests/test_tokenizer.py tests/test_spore.py -q
 
       - name: Cross-engine parity (needs trained weights)
         run: pytest tests/test_parity.py -q

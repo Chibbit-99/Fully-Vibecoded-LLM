@@ -253,6 +253,7 @@ class NumpyGPT:
         top_p: Optional[float] = 0.95,
         seed: Optional[int] = None,
         stop_strings: Optional[List[str]] = None,
+        stop_tokens: Optional[set] = None,
     ) -> Dict[str, Any]:
         rng = np.random.default_rng(seed)
         ids = self.tokenizer.encode(prompt) if isinstance(prompt, str) else list(prompt)
@@ -269,6 +270,11 @@ class NumpyGPT:
             nxt = self.sample(logits[0], temperature, top_k, top_p, rng)
             produced.append(nxt)
             ctx = [nxt]
+            if stop_tokens and nxt in stop_tokens:
+                # a control token ended the turn; do not echo it
+                produced.pop()
+                text = self.tokenizer.decode(produced)
+                break
             new_text = self.tokenizer.decode(produced)
             if stop_strings and any(s and s in new_text for s in stop_strings):
                 # trim to the first stop string

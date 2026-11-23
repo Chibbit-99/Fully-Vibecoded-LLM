@@ -1,0 +1,325 @@
+name: Train Spore (12M / 36M)
+
+# Spore is trained in two stages on free GitHub-hosted CPU runners (2 cores):
+#
+#   stage 1  pretrain : WikiText-2 + TinyStories prose, next-token prediction
+#   stage 2  sft      : chat turns, masked loss on the assistant's tokens only
+#
+# A 12M model needs ~30-40 minutes of pretraining and ~15 of chat tuning; the
+# 36M model needs 3-5 hours of pretraining.  GitHub kills a job at 6 hours, so
+# **every invocation trains at most `chunk_minutes` and then stops cleanly**
+# (checkpoint = weights + optimizer + RNG + step).  The checkpoint is cached
+# between runs, so re-running the same workflow continues exactly where the
+# last chunk stopped -- verified bit-identical to one uninterrupted run.
+#
+# How to drive it to completion
+# -----------------------------
+#   1. Run this workflow with model=spore-1-12M, stage=pretrain.  Repeat until
+#      the job log says "FINISHED" (usually once).
+#   2. Run it with stage=sft (same model).  Repeat until FINISHED.
+#   3. Run it with model=spore-1-36M and repeat both stages.
+# Each run prints `[continue]` or `[done]` and the summary says what is left.
+#
+# `runs/` is gitignored (multi-hundred-MB checkpoints) and must never be passed
+# to `git add` -- that fails the job *after* training succeeds.  Only
+# `model/spore/**` is committed.
+
+on:
+  workflow_dispatch:
+    inputs:
+      model:
+        description: "Which Spore model to train"
+        type: choice
+        required: true
+        default: "spore-1-12M"
+        options:
+          - "spore-1-12M"
+          - "spore-1-36M"
+      stage:
+        description: "pretrain (prose) then sft (chat)"
+        type: choice
+        required: true
+        default: "pretrain"
+        options:
+          - "pretrain"
+          - "sft"
+      chunk_minutes:
+        description: "Max training minutes for THIS job (must stay under 6h incl. install)"
+        required: false
+        default: "300"
+      target_tokens:
+        description: "Total tokens for the stage (e.g. 40e6). Empty = sensible default"
+        required: false
+        default: ""
+      reset:
+        description: "Ignore the checkpoint cache and start this stage from scratch"
+        type: boolean
+        required: false
+        default: false
+
+concurrency:
+  # one job per model+stage at a time; the cache is the shared state
+  group: spore-${{ inputs.model || 'spore-1-12M' }}-${{ inputs.stage || 'pretrain' }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+env:
+  PYTHONUNBUFFERED: "1"
+  OMP_NUM_THREADS: "2"
+  MKL_NUM_THREADS: "2"
+
+jobs:
+  train:
+    name: ${{ inputs.model || 'spore-1-12M' }} / ${{ inputs.stage || 'pretrain' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 355   # hard ceiling below GitHub's 360
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies (CPU PyTorch)
+        run: |
+          python -m pip install --upgrade pip
+          pip install --index-url https://download.pytorch.org/whl/cpu torch
+          pip install numpy pyyaml pytest
+
+      - name: Runner info
+        run: |
+          echo "cpus: $(nproc)  mem: $(free -g | awk '/^Mem/{print $2}')GB"
+          python -c "import torch; print('torch', torch.__version__)"
+
+      # ---- resumable checkpoint cache ---------------------------------
+      # The key is stable per (model, stage) so restore-keys always finds the
+      # previous chunk, whichever run wrote it.
+      - name: Restore checkpoint cache
+        if: ${{ inputs.reset != true }}
+        id: cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            runs/${{ inputs.model || 'spore-1-12M' }}
+            data/spore
+          key: spore-ckpt-${{ inputs.model || 'spore-1-12M' }}-${{ inputs.stage || 'pretrain' }}-${{ github.run_id }}
+          restore-keys: |
+            spore-ckpt-${{ inputs.model || 'spore-1-12M' }}-${{ inputs.stage || 'pretrain' }}-
+
+      - name: Build corpus (cached between runs)
+        run: |
+          set -euo pipefail
+          # fingerprint the inputs: raw text + the builder itself
+          DATA_HASH=$( (cat data/raw_wikitext2.txt data/raw_tinystories.txt scripts/build_spore_data.py || true) \
+                       | python -c "import hashlib,sys;print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest()[:16])" )
+          echo "data fingerprint: $DATA_HASH"
+          if [ -f data/spore/qa.jsonl ] && [ -f data/spore/.hash ] && \
+             [ "$(cat data/spore/.hash)" = "$DATA_HASH" ]; then
+            echo "::notice::corpus already built for this data revision — reusing"
+            python -c "import json;d=json.load(open('data/spore/qa_stats.json'));print({k:d[k] for k in ('records','articles','stories')})"
+          else
+            python scripts/build_spore_data.py
+            echo "$DATA_HASH" > data/spore/.hash
+          fi
+
+      - name: Resolve plan (tokens -> steps)
+        id: plan
+        run: |
+          set -euo pipefail
+          MODEL="${{ inputs.model || 'spore-1-12M' }}"
+          STAGE="${{ inputs.stage || 'pretrain' }}"
+          TARGET_TOKENS="${{ inputs.target_tokens }}"
+          case "$MODEL" in
+            spore-1-12M) CONFIG=configs/spore_12m.json ;;
+            spore-1-36M) CONFIG=configs/spore_36m.json ;;
+            *) echo "::error::unknown model $MODEL"; exit 1 ;;
+          esac
+          if [ -z "$TARGET_TOKENS" ]; then
+            if [ "$STAGE" = "pretrain" ]; then
+              TARGET_TOKENS=40000000
+            else
+              TARGET_TOKENS=12000000
+            fi
+          fi
+          echo "config=$CONFIG" >> "${GITHUB_OUTPUT:-/dev/stdout}"
+          echo "target_tokens=$TARGET_TOKENS" >> "${GITHUB_OUTPUT:-/dev/stdout}"
+          echo "::notice::$MODEL $STAGE target ${TARGET_TOKENS} tokens using $CONFIG"
+
+      - name: Train chunk
+        run: |
+          set -euo pipefail
+          MODEL="${{ inputs.model || 'spore-1-12M' }}"
+          STAGE="${{ inputs.stage || 'pretrain' }}"
+          case "$MODEL" in
+            spore-1-12M) CONFIG=configs/spore_12m.json ;;
+            spore-1-36M) CONFIG=configs/spore_36m.json ;;
+            *) echo "::error::unknown model $MODEL"; exit 1 ;;
+          esac
+          TARGET_TOKENS="${{ inputs.target_tokens }}"
+          if [ -z "$TARGET_TOKENS" ]; then
+            if [ "$STAGE" = "pretrain" ]; then TARGET_TOKENS=40000000; else TARGET_TOKENS=12000000; fi
+          fi
+          CHUNK_MINUTES="${{ inputs.chunk_minutes || '300' }}"
+          OUT="runs/$MODEL"
+          mkdir -p "$OUT"
+          RESUME=""
+          if [ -f "$OUT/last.pt" ]; then
+            RESUME="--resume $OUT/last.pt"
+          CKPT="$OUT/last.pt" python - <<'PY'
+          import os, torch
+          ck = torch.load(os.environ["CKPT"], map_location="cpu", weights_only=False)
+          print(f"::notice::cached checkpoint step={ck.get('step')} "
+                f"stage={ck.get('stage')} finished={ck.get('finished')}")
+          PY
+          else
+            echo "::notice::no cached checkpoint — starting this stage from scratch"
+          fi
+
+          python -u scripts/train_spore.py \
+            --config "$CONFIG" \
+            --out-dir "$OUT" \
+            --stage "$STAGE" \
+            --token-budget "$TARGET_TOKENS" \
+            --chunk-minutes "$CHUNK_MINUTES" \
+            --threads 2 \
+            --log-interval 25 \
+            --save-interval 200 \
+            --eval-interval 100 \
+            --early-stop-patience 4 \
+            $RESUME
+
+      - name: Training summary
+        if: always()
+        run: |
+          MODEL="${{ inputs.model || 'spore-1-12M' }}"
+          OUT="runs/$MODEL"
+          if [ -f "$OUT/train_log.json" ]; then
+          OUT="$OUT" python - <<'PY' >> ${GITHUB_STEP_SUMMARY:-/dev/stdout}
+          import json, os
+          out = os.environ["OUT"]
+          d = json.load(open(os.path.join(out, "train_log.json")))
+          m, h = d["meta"], d["history"]
+          done = m.get("finished")
+          print(f"### {m.get('model')} — stage `{m.get('stage')}`\n")
+          print("| metric | value |")
+          print("|---|---|")
+          for k in ("stage", "params", "steps", "max_steps", "finished", "stop_reason",
+                    "best_val_loss", "batch_size", "block_size", "tokens_this_invocation",
+                    "tokens_per_second", "train_seconds"):
+              print(f"| {k} | {m.get(k)} |")
+          if done:
+              print("\n**Stage FINISHED.** "
+                    + ("Run the workflow again with `stage: sft`." if m.get("stage") == "pretrain"
+                       else "Model is exported and committed."))
+          else:
+              print("\n**Stage NOT finished.** Re-run this workflow with the same "
+                    "`model` and `stage` — it resumes from the checkpoint.")
+          print("\n<details><summary>loss history (last 16)</summary>\n")
+          print("```")
+          for e in h[-16:]:
+              print(e)
+          print("```")
+          print("</details>")
+          PY
+          else
+            echo "::warning::no train_log.json produced"
+          fi
+
+      # ---- publish (model/spore/** only — runs/ is gitignored) ----------
+      - name: Publish artefacts
+        run: |
+          set -euo pipefail
+          MODEL="${{ inputs.model || 'spore-1-12M' }}"
+          OUT="runs/$MODEL"
+          DEST="model/spore/$MODEL"
+          OUT="$OUT" python - <<'PY' > /tmp/finished.txt
+          import json, os, pathlib
+          p = pathlib.Path(os.environ["OUT"]) / "train_log.json"
+          print(1 if p.exists() and json.loads(p.read_text())["meta"].get("finished") else 0)
+          PY
+          FINISHED=$(cat /tmp/finished.txt)
+          if [ "$FINISHED" = "1" ] && [ -f "$OUT/weights.json" ]; then
+            mkdir -p "$DEST"
+            for f in weights.json config.json tokenizer.json loss_curve.svg samples.txt train_log.json; do
+              [ -f "$OUT/$f" ] && cp "$OUT/$f" "$DEST/$f"
+            done
+          DEST="$DEST" OUT="$OUT" python - <<'PY'
+          import json, os, pathlib
+          src = pathlib.Path(os.environ["OUT"]) / "train_log.json"
+          dest = pathlib.Path(os.environ["DEST"])
+          payload = json.loads(src.read_text())
+          meta = payload["meta"]
+          meta["history"] = payload["history"]
+          (dest / "meta.json").write_text(json.dumps(meta, indent=2) + "\n")
+          print(f"published {dest}")
+          PY
+            du -h model/spore/$MODEL/* | sort -h
+          else
+            echo "::notice::stage not finished yet — nothing published (checkpoint stays in the cache)"
+          fi
+          python scripts/update_readme.py || true
+
+      - name: Save checkpoint cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            runs/${{ inputs.model || 'spore-1-12M' }}
+            data/spore
+          key: spore-ckpt-${{ inputs.model || 'spore-1-12M' }}-${{ inputs.stage || 'pretrain' }}-${{ github.run_id }}
+
+      - name: Upload artefacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: spore-${{ inputs.model || 'spore-1-12M' }}-${{ inputs.stage || 'pretrain' }}-${{ github.run_number }}
+          path: |
+            runs/${{ inputs.model || 'spore-1-12M' }}/train_log.json
+            runs/${{ inputs.model || 'spore-1-12M' }}/samples.txt
+            runs/${{ inputs.model || 'spore-1-12M' }}/loss_curve.svg
+            model/spore/${{ inputs.model || 'spore-1-12M' }}
+          if-no-files-found: warn
+          retention-days: 90
+
+      - name: Commit trained model
+        run: |
+          set -euo pipefail
+          # Nothing to publish when the stage is mid-flight (the checkpoint is
+          # in the cache, not in git) — exit before touching the index so a
+          # half-finished stage never produces an empty commit.
+          MODEL_DIR="model/spore/${{ inputs.model || 'spore-1-12M' }}"
+          if [ ! -f "$MODEL_DIR/weights.json" ]; then
+            echo "::notice::no published weights for this stage yet — nothing to commit"
+            exit 0
+          fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # Only model/ and README.md. NEVER runs/ — it is gitignored and a
+          # `git add` of an ignored path exits 1, which under `set -e` used to
+          # fail this job *after* a successful multi-hour training run.
+          git add model/ README.md 2>/dev/null || git add model/
+          if git diff --cached --quiet; then
+            echo "no model changes to commit"
+            exit 0
+          fi
+          NAME=$(python -c "import json;print(json.load(open('$MODEL_DIR/meta.json')).get('model','spore'))" 2>/dev/null || echo spore)
+          git commit -m "spore: ${NAME} update [skip ci]"
+          git push
+
+      # ---- advisory test gate -------------------------------------------
+      # Runs *after* publishing so a flaky test can never throw away a chunk.
+      - name: Test suite (advisory)
+        if: always()
+        continue-on-error: true
+        run: |
+          if python -c "import pytest" 2>/dev/null; then
+            pytest tests/test_spore.py tests/test_tokenizer.py -q || true
+          else
+            echo "::warning::pytest unavailable — skipping advisory tests"
+          fi
