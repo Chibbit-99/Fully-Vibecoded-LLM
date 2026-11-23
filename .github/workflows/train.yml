@@ -39,6 +39,17 @@ on:
         type: boolean
         required: false
         default: false
+  push:
+    branches: [main]
+    # a push that touches the trainer or its configs re-runs training; the
+    # model commit itself is tagged [skip ci] so it cannot loop
+    paths:
+      - ".github/workflows/train.yml"
+      - "scripts/train.py"
+      - "tinyllm/model.py"
+      - "tinyllm/tokenizer.py"
+      - "tinyllm/dataset.py"
+      - "configs/**.json"
   schedule:
     # keep nudging the model forward: each run resumes and adds a chunk
     - cron: "0 4 * * *"
