@@ -27,7 +27,7 @@ An experiment: **can an AI agent alone design, train and ship a language model?*
 | **Browser engine** | `web/engine.js` | The same forward pass in vanilla JavaScript, in a Web Worker. No WASM, no GPU, no CDN. |
 | **Demo** | `web/index.html` | Type a prompt, watch tokens stream in. Deployed automatically to GitHub Pages. |
 
-**The model:** TinyGPT — 3.5M parameters, 4 layers, 4 heads, d_model 256, context window 192 tokens, 1280-token BPE vocabulary, trained on [Tiny Shakespeare](https://github.com/karpathy/char-rnn) (public domain, ~1.1 MB).
+**The model:** TinyGPT — **3.54M parameters**, 4 layers, 4 heads, d_model 256, context window 192 tokens, 1280-token BPE vocabulary, trained on [Tiny Shakespeare](https://github.com/karpathy/char-rnn) (public domain, ~1.1 MB). Exact metrics are generated below by the training workflow.
 
 It does not know any facts. It writes Shakespeare-flavoured English at a character level. That is exactly the point for an experiment about *building the machinery*, not about beating benchmarks.
 
@@ -92,7 +92,7 @@ pip install -r requirements.txt
 python scripts/serve_web.py          # then open http://localhost:8080/web/
 ```
 
-The normalised weights (`model/weights.json`, ~7 MB of fp16) are fetched once, then **every token is generated on your machine** in a Web Worker. No inference API is involved.
+The weights (`model/weights.json`, ~9 MB — float16 buffers base64-encoded) are fetched once, then **every token is generated on your machine** in a Web Worker. No inference API is involved.
 
 ### 2 · The Python inference server
 
@@ -280,7 +280,7 @@ On a GitHub runner expect roughly 2 000–3 000 tokens/s; a 6M-parameter model a
 * **It's a tiny model.** No instruction following, no reasoning, no facts. It continues Shakespeare-flavoured text.
 * **CPU training only.** Throughput is ~2.5k tokens/s; this is why the shipped model is small.
 * **The browser engine is single-threaded.** On the 3.5M model expect tens of tokens/second depending on hardware — fast enough to watch, not fast enough for a chat product.
-* **Float16 weights.** Chosen so the browser payload stays ~7 MB. The quality cost is nil for generation; the parity tests quantify it.
+* **Float16 weights.** Chosen so the browser payload stays ~9 MB for 3.5M parameters. The quality cost is nil for generation; the parity tests quantify it.
 
 ## License
 

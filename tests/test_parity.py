@@ -21,8 +21,11 @@ import numpy as np
 import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
-WEIGHTS = Path(os.environ.get("TINYLLM_CHECKPOINT", ROOT / "runs/local/weights.json"))
-CKPT_PT = Path(os.environ.get("TINYLLM_CKPT_PT", ROOT / "runs/local/model.pt"))
+_DEFAULT_WEIGHTS = ROOT / "model" / "weights.json"
+if not _DEFAULT_WEIGHTS.exists():
+    _DEFAULT_WEIGHTS = ROOT / "runs" / "local" / "weights.json"
+WEIGHTS = Path(os.environ.get("TINYLLM_CHECKPOINT", _DEFAULT_WEIGHTS))
+CKPT_PT = Path(os.environ.get("TINYLLM_CKPT_PT", ROOT / "runs" / "local" / "model.pt"))
 
 needs_weights = pytest.mark.skipif(not WEIGHTS.exists(), reason="no trained checkpoint available")
 

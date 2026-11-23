@@ -7,8 +7,14 @@
  */
 import { ByteBPE } from "./tokenizer.js";
 
-const WEIGHTS_URL = new URL("../model/weights.json", import.meta.url).href;
-const META_URL = new URL("../model/meta.json", import.meta.url).href;
+// Two deployment layouts are supported:
+//   repo root     -> /web/app.js  fetches /model/weights.json        (../model)
+//   Pages         -> /app.js      fetches /model/weights.json        (./model)
+const CANDIDATES = [
+  new URL("../model/weights.json", import.meta.url).href,
+  new URL("./model/weights.json", import.meta.url).href,
+];
+const META_CANDIDATES = CANDIDATES.map((u) => u.replace("weights.json", "meta.json"));
 
 const $ = (id) => document.getElementById(id);
 const els = {
@@ -66,25 +72,36 @@ function setBusy(busy) {
   els.generate.textContent = busy ? "Generating…" : "Generate";
 }
 
+async function fetchFirst(urls, init) {
+  let lastErr = null;
+  for (const url of urls) {
+    try {
+      const resp = await fetch(url, init);
+      if (resp.ok) return { resp, url };
+      lastErr = new Error(`HTTP ${resp.status} for ${url}`);
+    } catch (err) {
+      lastErr = err;
+    }
+  }
+  throw lastErr || new Error("no candidate URL succeeded");
+}
+
 async function init() {
   els.loadStatus.textContent = "Loading weights…";
-  try {
-    const metaResp = await fetch(META_URL);
-    if (metaResp.ok) {
-      const meta = await metaResp.json();
-      if (meta.val_loss !== undefined) {
-        els.badges.val.textContent = `val loss ${meta.val_loss}`;
-        els.badges.val.classList.add("ok");
-        els.about.val.textContent = `${meta.val_loss} (${meta.bits_per_byte} bits/byte)`;
-      }
+
+  const meta = await fetchFirst(META_CANDIDATES).then((r) => r.resp.json()).catch(() => null);
+  if (meta && meta.val_loss !== undefined) {
+    els.badges.val.textContent = `val loss ${meta.val_loss}`;
+    els.badges.val.classList.add("ok");
+    els.about.val.textContent = `${meta.val_loss}${meta.bits_per_byte ? ` (${meta.bits_per_byte} bits/byte)` : ""}`;
+    if (meta.params) {
+      els.badges.params.textContent = `${(meta.params / 1e6).toFixed(2)}M params`;
+      els.badges.params.classList.add("ok");
     }
-  } catch {
-    /* meta.json is optional */
   }
 
   try {
-    const resp = await fetch(WEIGHTS_URL);
-    if (!resp.ok) throw new Error(`HTTP ${resp.status} for ${WEIGHTS_URL}`);
+    const { resp } = await fetchFirst(CANDIDATES);
     const payload = await resp.json();
 
     worker = new Worker(new URL("./worker.js", import.meta.url), { type: "module" });
@@ -97,7 +114,7 @@ async function init() {
   } catch (err) {
     els.loadStatus.innerHTML =
       `<span class="error">Could not load weights: ${err.message}. ` +
-      `Serve the repo root (python scripts/serve_web.py) and make sure model/weights.json exists.</span>`;
+      `Serve the repo root (make demo → /web/) or deploy with the Pages workflow.</span>`;
   }
 }
 
