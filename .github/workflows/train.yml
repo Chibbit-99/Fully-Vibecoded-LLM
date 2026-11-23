@@ -108,10 +108,42 @@ jobs:
             tinyllm-ckpt-v2-${{ inputs.config || 'configs/fast.json' }}-${{ inputs.seed || '1337' }}-
 
       - name: Prepare output directory
+        env:
+          CONFIG: ${{ inputs.config || 'configs/fast.json' }}
+          MAX_STEPS: ${{ inputs.max_steps || '2000' }}
         run: |
+          set -euo pipefail
           mkdir -p runs/main
           if [ -f model/tokenizer.json ] && [ ! -f runs/main/tokenizer.json ]; then
             cp model/tokenizer.json runs/main/tokenizer.json
+          fi
+
+          # Self-healing cache check. A cached checkpoint is only reusable if it
+          # was produced by the same recipe. Otherwise (e.g. the LR-schedule fix
+          # landed after an overfit run finished) start clean, because continuing
+          # would either skip training entirely or inherit the broken schedule.
+          if [ -f runs/main/last.pt ]; then
+            FINGERPRINT=$(python - <<'PY'
+          import hashlib, json, os
+          # must mirror scripts/train.py exactly
+          cfg = json.load(open(os.environ['CONFIG']))
+          key = (json.dumps(cfg, sort_keys=True).encode()
+                 + f"|{os.environ['MAX_STEPS']}|1337|100|5".encode())
+          print(hashlib.sha256(key).hexdigest()[:16])
+          PY
+          )
+            CACHED=$(python - <<'PY'
+          import json, os, pathlib
+          p = pathlib.Path('runs/main/train_log.json')
+          print(json.loads(p.read_text()).get('fingerprint', 'unknown') if p.exists() else 'unknown')
+          PY
+          )
+            echo "recipe fingerprint: $FINGERPRINT | cached: $CACHED"
+            if [ "$CACHED" != "$FINGERPRINT" ]; then
+              echo "::notice::cached checkpoint has a different recipe — starting fresh"
+              rm -f runs/main/last.pt runs/main/best.pt runs/main/model.pt runs/main/train_log.json
+              echo "$FINGERPRINT" > runs/main/.fingerprint
+            fi
           fi
           if [ -f runs/main/last.pt ]; then
             echo "::notice::found cached checkpoint — resuming"

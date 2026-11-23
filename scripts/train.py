@@ -484,7 +484,18 @@ def main(argv: List[str] | None = None) -> int:
             f.write("=" * 70 + f"\nPROMPT: {s['prompt']!r}\n" + "-" * 70 + "\n")
             f.write(s["completion"] + "\n\n")
 
+    # recipe fingerprint: lets CI decide whether a cached checkpoint is still
+    # representative of the current training setup (see train.yml)
+    import hashlib
+
+    recipe_key = (
+        json.dumps(config.to_dict(), sort_keys=True).encode()
+        + f"|{args.max_steps}|{args.seed}|{args.eval_interval}|{args.early_stop_patience}".encode()
+    )
+    fingerprint = hashlib.sha256(recipe_key).hexdigest()[:16]
+
     meta = {
+        "fingerprint": fingerprint,
         "config": config.to_dict(),
         "params": model.num_parameters(),
         "params_non_embedding": model.num_parameters(non_embedding=True),
