@@ -328,3 +328,33 @@ def test_workflow_publishes_before_gating_on_tests():
     # the gate must not be able to fail the job
     gate_step = next(s for s in data["jobs"]["train"]["steps"] if "Test suite" in s.get("name", ""))
     assert gate_step.get("continue-on-error") is True
+
+
+def test_lr_schedule_uses_absolute_target_not_chunk_bound():
+    """Chunked runs must follow the same LR curve as one long run.
+
+    Regression: the schedule was derived from the per-invocation step bound, so
+    each chunk replayed warmup/decay against a different horizon and the model
+    decayed into overfitting (val loss rose 2.83 -> 3.90 on the first CI run).
+    """
+    import argparse
+
+    from scripts.train import lr_at
+
+    def args_for(**kw):
+        base = dict(lr=1e-3, min_lr=1e-4, warmup=100, max_steps=4000)
+        base.update(kw)
+        return argparse.Namespace(**base)
+
+    full = args_for()
+    # a chunk that only plans to run 700 steps must still report the LR that the
+    # 4000-step schedule dictates at that absolute position
+    chunk = args_for(max_steps=700, total_steps=4000)
+
+    for step in (0, 50, 100, 350, 699):
+        assert abs(lr_at(step, chunk) - lr_at(step, full)) < 1e-12, step
+
+    # and the curve must actually decay
+    assert lr_at(0, full) < lr_at(1000, full) > lr_at(4000, full)
+    # warmup ramps up
+    assert lr_at(0, full) < lr_at(50, full) < lr_at(100, full)

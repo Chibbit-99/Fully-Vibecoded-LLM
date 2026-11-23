@@ -21,7 +21,7 @@ on:
       max_steps:
         description: "Total optimiser steps for the whole run"
         required: false
-        default: "4000"
+        default: "2000"
       batch_size:
         description: "Micro batch size"
         required: false
@@ -128,7 +128,7 @@ jobs:
       - name: Train
         env:
           CONFIG: ${{ inputs.config || 'configs/fast.json' }}
-          MAX_STEPS: ${{ inputs.max_steps || '4000' }}
+          MAX_STEPS: ${{ inputs.max_steps || '2000' }}
           BATCH_SIZE: ${{ inputs.batch_size || '32' }}
           SEED: ${{ inputs.seed || '1337' }}
           CHUNK_MINUTES: ${{ inputs.chunk_minutes || '25' }}
@@ -157,9 +157,10 @@ jobs:
             --seed "$SEED" \
             --threads 2 \
             --time-budget "$CHUNK_MINUTES" \
-            --eval-interval 250 \
+            --eval-interval 100 \
             --log-interval 50 \
             --save-interval 100 \
+            --early-stop-patience 5 \
             $RESUME
 
       - name: Training summary
@@ -199,7 +200,8 @@ jobs:
               cp "$src" "model/$f"
             fi
           done
-          if [ -f runs/main/train_log.json ]; then
+          if [ -f runs/main/train_log.json ] && \
+             [ "$(readlink -f runs/main/train_log.json)" != "$(readlink -f model/train_log.json 2>/dev/null || echo x)" ]; then
             cp runs/main/train_log.json model/train_log.json
             python - <<'PY'
           import json
