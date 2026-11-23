@@ -39,15 +39,15 @@ It does not know any facts. It writes Shakespeare-flavoured English at a charact
 
 | Metric | Value |
 |---|---|
-| Parameters | **3.54M** (3,536,384) |
-| Architecture | 4 layers · 4 heads · d_model 256 · context 192 |
+| Parameters | **2.05M** (2,050,176) |
+| Architecture | 4 layers · 4 heads · d_model 192 · context 128 |
 | Vocabulary | 1280 byte-BPE tokens |
-| Optimiser steps | **600** |
-| Tokens seen | 3.69M (3,686,400) |
-| Validation loss | **3.0012** nats/token |
-| Bits per byte | **2.255** (8.0 = random bytes) |
-| Training time | local GPU-less run (see `runs/main/train.log`) |
-| Loss trajectory | 3.504 → 3.001 |
+| Optimiser steps | **4,000** |
+| Tokens seen | 32.77M (32,768,000) |
+| Validation loss | **3.9589** nats/token |
+| Bits per byte | **2.968** (8.0 = random bytes) |
+| Training time | 22 min on CPU 25,276 tok/s |
+| Loss trajectory | 3.442 → 3.897 |
 
 <p align="center"><img src="model/loss_curve.svg" alt="training and validation loss" width="680"></p>
 <p align="center"><sub>train loss in blue, validation loss in green — rendered by scripts/train.py</sub></p>
@@ -57,19 +57,21 @@ It does not know any facts. It writes Shakespeare-flavoured English at a charact
 
 ```
 ROMEO:
-Un God was the sew of this liberty s!
+It is a flatterer, but I am swift to you for the
+velarge-man purpose.
 
-LADY GREEN:
-I have have been sovereign me to a child:
-Take this beat the hunn an tit;
-I will not, for my dear heart and thy mother
-In your grace my hearts and the pounds, and our dispose ished
-Hath to the suf of to their blocks ask
-To the st fraisheel of their own pority,
-And we have not it on no more to this grace?
+First Servingman:
+And I'll hang on, and shall have a bedly here
+That I should bear thee to this good condition.
 
-KING VINCENTIO:
-You do have speak mayor no and to your 
+CAPULET:
+Go, get you hence; path like brief, disformion,
+Or will I the sudden of men of of your reason
+To the admir of here by the that your ine and humbering and be be instrage there.
+
+GLOUCESTER:
+You, better Richard----------
+B
 ```
 
 </details>

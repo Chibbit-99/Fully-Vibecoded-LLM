@@ -108,6 +108,13 @@ def parse_args(argv: List[str] | None = None) -> argparse.Namespace:
         help="stop after this many steps in THIS invocation (0 = run to --max-steps). "
              "Lets CI split a long run across jobs that each fit the time budget.",
     )
+    t.add_argument(
+        "--early-stop-patience",
+        type=int,
+        default=0,
+        help="stop when val loss has not improved for N evaluations (0 = never). "
+             "Prevents a long run from overfitting past its best weights.",
+    )
     t.add_argument("--seed", type=int, default=1337)
     t.add_argument("--time-budget", type=float, default=0.0, help="stop after N minutes (0 = no limit)")
     t.add_argument("--export", action="store_true", help="write weights.json even if not finished")
@@ -144,10 +151,18 @@ def save_checkpoint(path: Path, model, optimizer, config, step: int, best_val: f
 
 
 def lr_at(step: int, args: argparse.Namespace) -> float:
-    """Linear warmup then cosine decay to min_lr."""
+    """Linear warmup then cosine decay to min_lr.
+
+    The schedule is a function of the *absolute* step against the run's total
+    ``--max-steps``, never against a chunk bound. Chunked invocations therefore
+    follow exactly the same curve as one long run. (Regression: deriving it from
+    the per-invocation bound decoupled the LR from the schedule and let the
+    model decay into overfitting.)
+    """
     if step < args.warmup:
         return args.lr * (step + 1) / max(1, args.warmup)
-    progress = (step - args.warmup) / max(1, args.max_steps - args.warmup)
+    total = getattr(args, "total_steps", 0) or args.max_steps
+    progress = (step - args.warmup) / max(1, total - args.warmup)
     progress = min(1.0, progress)
     coeff = 0.5 * (1.0 + math.cos(math.pi * progress))
     return args.min_lr + coeff * (args.lr - args.min_lr)
@@ -352,6 +367,7 @@ def main(argv: List[str] | None = None) -> int:
     running = 0.0
     running_n = 0
     stopped_early = False
+    evals_since_improvement = 0
 
     stop_step = args.max_steps
     if args.budget_steps > 0:
@@ -393,8 +409,22 @@ def main(argv: List[str] | None = None) -> int:
             history.append({"step": step + 1, "val_loss": round(val_loss, 5)})
             if val_loss < best_val:
                 best_val = val_loss
-            best_val = min(best_val, val_loss)
+            if val_loss < best_val:
+                best_val = val_loss
+                evals_since_improvement = 0
+            else:
+                evals_since_improvement += 1
             save_checkpoint(out_dir / "best.pt", model, optimizer, config, step + 1, best_val, history, rng)
+
+            if args.early_stop_patience and evals_since_improvement >= args.early_stop_patience:
+                print(
+                    f"[early-stop] no improvement for {evals_since_improvement} evaluations "
+                    f"(best {best_val:.4f} at step {step + 1}); stopping",
+                    flush=True,
+                )
+                stopped_early = True
+                stop_step = step + 1
+                break
 
         # Always keep a resumable checkpoint near the end of an invocation: a
         # job may be stopped by the runner at *any* step, so relying only on a
@@ -421,6 +451,22 @@ def main(argv: List[str] | None = None) -> int:
               f"re-run with the same flags to continue")
 
     # ---- final evaluation + samples --------------------------------------
+    # If the run overfit, export the best checkpoint rather than the last one.
+    best_path = out_dir / "best.pt"
+    if best_path.exists():
+        best_ckpt = torch.load(best_path, map_location="cpu", weights_only=False)
+        if float(best_ckpt.get("best_val", 1e9)) < float("inf"):
+            last_eval = estimate_loss(model, val_ids, args, rng, device)
+            if float(best_ckpt["best_val"]) < last_eval - 1e-6:
+                print(
+                    f"[export] using best checkpoint (val {best_ckpt['best_val']:.4f}) "
+                    f"instead of final weights (val {last_eval:.4f})",
+                    flush=True,
+                )
+                model.load_state_dict(best_ckpt["model"])
+                best_val = float(best_ckpt["best_val"])
+                final_step = int(best_ckpt.get("step", final_step))
+
     val_loss = estimate_loss(model, val_ids, args, rng, device)
     print(f"[final] val_loss {val_loss:.4f} (best {best_val:.4f})")
 

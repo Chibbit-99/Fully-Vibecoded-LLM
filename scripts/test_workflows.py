@@ -109,7 +109,11 @@ def run_block(sandbox: Path, workflow: str, name: str, script: str) -> tuple[boo
     # inside a temp repo the tokenizer/config already exist; make publish steps
     # resilient because there is no training output
     body = body.replace("runs/main/", "model/")
-    full = "set -euo pipefail\n" + body
+    # the runner always exports these; a bare shell does not
+    summary = Path(tempfile.gettempdir()) / "wf_summary.md"
+    summary.write_text("")
+    body = body.replace("$GITHUB_STEP_SUMMARY", str(summary))
+    full = "set -euo pipefail\nexport GITHUB_STEP_SUMMARY=%s\n" % summary + body
     proc = subprocess.run(
         ["bash", "-c", full],
         cwd=sandbox,
