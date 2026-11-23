@@ -1,0 +1,19 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+
+# Training checkpoints are large and machine-specific; CI caches them instead.
+runs/
+*.pt
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+node_modules/
+
+# Local scratch
+*.log.tmp
