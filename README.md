@@ -46,10 +46,10 @@ It does not know any facts. It writes Shakespeare-flavoured English at a charact
 | Vocabulary | 1280 byte-BPE tokens |
 | Optimiser steps | **500** |
 | Tokens seen | 4.10M (4,096,000) |
-| Validation loss | **3.0715** nats/token |
-| Bits per byte | **2.303** (8.0 = random bytes) |
-| Training time | 5 min on CPU 13,975 tok/s |
-| Loss trajectory | 3.955 → 3.062 |
+| Validation loss | **3.0694** nats/token |
+| Bits per byte | **2.301** (8.0 = random bytes) |
+| Training time | 8 min on CPU 8,562 tok/s |
+| Loss trajectory | 3.983 → 3.057 |
 
 <p align="center"><img src="model/loss_curve.svg" alt="training and validation loss" width="680"></p>
 <p align="center"><sub>train loss in blue, validation loss in green — rendered by scripts/train.py</sub></p>
@@ -59,16 +59,14 @@ It does not know any facts. It writes Shakespeare-flavoured English at a charact
 
 ```
 ROMEO:
-It is to hear your lord:
-I will not see this man't to so.
-
-YORK:
-Aumper thy honour is the a honour;
-And he would be have ene and it fare in the world:
-Corcure of thy honour and freven my heart,
-And the patter of his pare and prehe to have w so farewell,
-And to he all in a well. it but are he the love in that readvice
-And his he is it is do it do so I would had not indeed, it I we was he as say, not we for
+It thou w the seclif
+And thou art dared by your hearts dewant to our gates,
+And should make thee thee this decried o'er thee;
+And thy mawomin the cir rector wars,
+And I have reven my heart will thou grock
+From Edward our love and devil and thou wilt lif love!
+My soose thou Jame Jaithst will thou love we from that I thy Richard, I thy love,
+I thou God art thou I thou hast thou art thou thou wainst Richard thou 
 ```
 
 </details>
