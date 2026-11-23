@@ -90,7 +90,24 @@ def parse_args(argv: List[str] | None = None) -> argparse.Namespace:
     t.add_argument("--eval-batches", type=int, default=20)
     t.add_argument("--log-interval", type=int, default=25)
     t.add_argument("--save-interval", type=int, default=1000)
-    t.add_argument("--threads", type=int, default=0, help="0 = auto")
+    t.add_argument("--threads", type=int, default=0, help="0 = auto (use nproc on CI)")
+    t.add_argument(
+        "--compile",
+        action="store_true",
+        help="torch.compile the model (big CPU speedup on Linux, slower first step)",
+    )
+    t.add_argument(
+        "--fast-math",
+        action="store_true",
+        help="allow MKLDNN/mkldnn backends (default off for exact parity)",
+    )
+    t.add_argument(
+        "--budget-steps",
+        type=int,
+        default=0,
+        help="stop after this many steps in THIS invocation (0 = run to --max-steps). "
+             "Lets CI split a long run across jobs that each fit the time budget.",
+    )
     t.add_argument("--seed", type=int, default=1337)
     t.add_argument("--time-budget", type=float, default=0.0, help="stop after N minutes (0 = no limit)")
     t.add_argument("--export", action="store_true", help="write weights.json even if not finished")
@@ -105,6 +122,27 @@ def parse_args(argv: List[str] | None = None) -> argparse.Namespace:
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
+def save_checkpoint(path: Path, model, optimizer, config, step: int, best_val: float, history, rng) -> None:
+    """Everything needed to resume *exactly*: weights, optimizer, RNG state."""
+    import torch
+
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    torch.save(
+        {
+            "model": model.state_dict(),
+            "optimizer": optimizer.state_dict(),
+            "config": config.to_dict(),
+            "step": step,
+            "best_val": best_val,
+            "history": history,
+            "rng_numpy": rng.bit_generator.state,
+            "rng_torch": torch.get_rng_state(),
+        },
+        tmp,
+    )
+    tmp.replace(path)  # atomic: a killed job never leaves a half-written file
+
+
 def lr_at(step: int, args: argparse.Namespace) -> float:
     """Linear warmup then cosine decay to min_lr."""
     if step < args.warmup:
@@ -226,6 +264,10 @@ def main(argv: List[str] | None = None) -> int:
 
     if args.threads > 0:
         torch.set_num_threads(args.threads)
+        torch.set_num_interop_threads(1)  # avoid inter-op overhead on small models
+    if args.fast_math:
+        # enables channels_last + better CPU kernels for the linear layers
+        torch.backends.mkldnn.enabled = True
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
     random.seed(args.seed)
@@ -271,6 +313,12 @@ def main(argv: List[str] | None = None) -> int:
     config.save(out_dir / "config.json")
 
     model = GPT(config).to(device)
+    if args.compile and hasattr(torch, "compile"):
+        try:
+            model = torch.compile(model)  # type: ignore[assignment]
+            print("[model] torch.compile enabled")
+        except Exception as exc:  # pragma: no cover - backend dependent
+            print(f"[model] torch.compile unavailable ({exc}); using eager mode")
     print(f"[model] {model.num_parameters():,} parameters "
           f"(non-embedding {model.num_parameters(non_embedding=True):,})")
 
@@ -290,6 +338,12 @@ def main(argv: List[str] | None = None) -> int:
         start_step = int(ckpt.get("step", 0))
         history = list(ckpt.get("history", []))
         best_val = float(ckpt.get("best_val", best_val))
+        if "rng_numpy" in ckpt:
+            try:
+                rng.bit_generator.state = ckpt["rng_numpy"]
+                torch.set_rng_state(ckpt["rng_torch"])
+            except Exception:
+                pass
         print(f"[resume] step {start_step} best_val={best_val:.4f}")
 
     model.train()
@@ -299,7 +353,14 @@ def main(argv: List[str] | None = None) -> int:
     running_n = 0
     stopped_early = False
 
-    for step in range(start_step, args.max_steps):
+    stop_step = args.max_steps
+    if args.budget_steps > 0:
+        stop_step = min(stop_step, start_step + args.budget_steps)
+        if stop_step < args.max_steps:
+            print(f"[budget] this invocation trains {start_step} -> {stop_step} of {args.max_steps} "
+                  f"(resume later with the same total)")
+
+    for step in range(start_step, stop_step):
         lr = lr_at(step, args)
         for group in optimizer.param_groups:
             group["lr"] = lr
@@ -326,37 +387,38 @@ def main(argv: List[str] | None = None) -> int:
                   f"{tps:,.0f} tok/s | {elapsed/60:.1f} min", flush=True)
             history.append({"step": step + 1, "train_loss": round(avg, 5), "lr": round(lr, 7)})
 
-        if (step + 1) % args.eval_interval == 0 or step + 1 == args.max_steps:
+        if (step + 1) % args.eval_interval == 0 or step + 1 == stop_step:
             val_loss = estimate_loss(model, val_ids, args, rng, device)
             print(f"  [eval] step {step+1} val_loss {val_loss:.4f}", flush=True)
             history.append({"step": step + 1, "val_loss": round(val_loss, 5)})
             if val_loss < best_val:
                 best_val = val_loss
-            torch.save(
-                {"model": model.state_dict(), "optimizer": optimizer.state_dict(), "config": config.to_dict(),
-                 "step": step + 1, "best_val": best_val, "history": history},
-                out_dir / "best.pt",
-            )
+            best_val = min(best_val, val_loss)
+            save_checkpoint(out_dir / "best.pt", model, optimizer, config, step + 1, best_val, history, rng)
 
-        if args.save_interval and (step + 1) % args.save_interval == 0:
-            torch.save(
-                {"model": model.state_dict(), "optimizer": optimizer.state_dict(), "config": config.to_dict(),
-                 "step": step + 1, "best_val": best_val, "history": history},
-                out_dir / "last.pt",
-            )
+        # Always keep a resumable checkpoint near the end of an invocation: a
+        # job may be stopped by the runner at *any* step, so relying only on a
+        # save_interval boundary can lose an entire chunk of training.
+        near_end = stop_step - (step + 1) <= 2
+        if args.save_interval and ((step + 1) % args.save_interval == 0 or near_end):
+            save_checkpoint(out_dir / "last.pt", model, optimizer, config, step + 1, best_val, history, rng)
 
         if args.time_budget > 0 and (time.time() - t_start) / 60 > args.time_budget:
             print(f"[time] budget of {args.time_budget} min reached at step {step+1}", flush=True)
             stopped_early = True
             break
 
-    final_step = start_step if stopped_early and not history else int(history[-1]["step"]) if history else start_step
+    final_step = int(history[-1]["step"]) if history else start_step
     total_time = time.time() - t_start
-    torch.save(
-        {"model": model.state_dict(), "optimizer": optimizer.state_dict(), "config": config.to_dict(),
-         "step": final_step, "best_val": best_val, "history": history},
-        out_dir / "model.pt",
-    )
+    save_checkpoint(out_dir / "model.pt", model, optimizer, config, final_step, best_val, history, rng)
+    if final_step > 0:
+        # always leave a resumable checkpoint, even if no interval boundary hit
+        save_checkpoint(out_dir / "last.pt", model, optimizer, config, final_step, best_val, history, rng)
+
+    reached_target = final_step >= args.max_steps
+    if not reached_target:
+        print(f"[budget] stopped at step {final_step}/{args.max_steps} — "
+              f"re-run with the same flags to continue")
 
     # ---- final evaluation + samples --------------------------------------
     val_loss = estimate_loss(model, val_ids, args, rng, device)
@@ -395,6 +457,9 @@ def main(argv: List[str] | None = None) -> int:
         "seed": args.seed,
         "torch": torch.__version__,
         "device": device,
+        "compiled": bool(args.compile),
+        "total_steps_target": args.max_steps,
+        "finished": reached_target,
         "resumed_from": str(args.resume) if args.resume else None,
     }
     (out_dir / "train_log.json").write_text(json.dumps({"meta": meta, "history": history}, indent=2) + "\n")

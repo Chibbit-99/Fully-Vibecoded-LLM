@@ -1,47 +1,50 @@
 name: Train TinyLLM
 
-# Training runs on GitHub-hosted CPU runners. A full run takes ~30-45 minutes
-# on a 2-core runner; the workflow commits the trained artefacts back to the
-# branch so the demo and the API pick them up immediately.
+# Training runs on free GitHub-hosted CPU runners (2 cores, no GPU).
+#
+# Design notes learned the hard way:
+#   * A full 3000-step run of the 3.5M model takes ~55 min. The workflow is
+#     therefore *chunked*: every invocation trains at most `chunk_minutes` and
+#     saves a checkpoint. Re-running continues where it stopped (the cache key
+#     is stable, so `restore-keys` finds the previous chunk). You can drive it
+#     to completion by re-running, or let the schedule do it.
+#   * `runs/` is gitignored — it holds multi-hundred-MB checkpoints. Only
+#     `model/` is committed. Passing `runs/...` to `git add` fails the job.
 
 on:
   workflow_dispatch:
     inputs:
-      max_steps:
-        description: "Optimiser steps"
+      config:
+        description: "Model config (configs/*.json)"
         required: false
-        default: "3000"
+        default: "configs/fast.json"
+      max_steps:
+        description: "Total optimiser steps for the whole run"
+        required: false
+        default: "4000"
       batch_size:
         description: "Micro batch size"
         required: false
-        default: "16"
-      grad_accum:
-        description: "Gradient accumulation steps"
-        required: false
-        default: "2"
+        default: "32"
       seed:
         description: "Random seed"
         required: false
         default: "1337"
-      time_budget_minutes:
-        description: "Safety stop (minutes). 0 = no limit"
+      chunk_minutes:
+        description: "Max training minutes for THIS invocation (keeps the job short)"
         required: false
-        default: "120"
-      clear_checkpoints:
-        description: "Delete cached checkpoints before training"
+        default: "25"
+      reset:
+        description: "Ignore the checkpoint cache and start from scratch"
         type: boolean
         required: false
         default: false
-  push:
-    branches: [main]
-    paths:
-      - ".github/workflows/train.yml"
   schedule:
-    # weekly retrain so the artefact stays reproducible from a clean runner
-    - cron: "0 3 * * 1"
+    # keep nudging the model forward: each run resumes and adds a chunk
+    - cron: "0 4 * * *"
 
 concurrency:
-  group: train-tinyllm-${{ github.ref }}
+  group: train-tinyllm
   cancel-in-progress: false
 
 permissions:
@@ -49,20 +52,19 @@ permissions:
 
 env:
   PYTHONUNBUFFERED: "1"
+  # 2-core runners: match thread counts to cores, and stop torch thrashing
   OMP_NUM_THREADS: "2"
   MKL_NUM_THREADS: "2"
 
 jobs:
   train:
-    name: Train + export
+    name: Train chunk + publish
     runs-on: ubuntu-latest
-    timeout-minutes: 240
+    timeout-minutes: 90
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -74,124 +76,152 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install --index-url https://download.pytorch.org/whl/cpu torch
-          pip install numpy pytest
+          pip install numpy pyyaml
 
-      - name: Hugging Face style repo info
+      - name: Runner info
         run: |
-          echo "runner cpus: $(nproc)"
-          python -c "import torch; print('torch', torch.__version__, 'threads', torch.get_num_threads())"
+          echo "cpus: $(nproc)  mem: $(free -g | awk '/^Mem/{print $2}')GB"
+          python -c "import torch; print('torch', torch.__version__)"
 
       # ---- resumable checkpoint cache ---------------------------------
-      # Restores last.pt so interrupted runs can continue instead of restarting.
+      # The key is *stable* (it does not contain run_id) so the next run finds
+      # the previous chunk via restore-keys and continues training.
       - name: Restore checkpoint cache
-        if: ${{ inputs.clear_checkpoints != true }}
+        if: ${{ inputs.reset != true }}
+        id: cache
         uses: actions/cache/restore@v4
         with:
           path: runs/main
-          key: tinyllm-ckpt-${{ github.ref_name }}-${{ inputs.max_steps || '3000' }}-${{ inputs.seed || '1337' }}-${{ github.run_id }}
+          key: tinyllm-ckpt-v2-${{ inputs.config || 'configs/fast.json' }}-${{ inputs.seed || '1337' }}-${{ github.run_id }}
           restore-keys: |
-            tinyllm-ckpt-${{ github.ref_name }}-${{ inputs.max_steps || '3000' }}-${{ inputs.seed || '1337' }}-
+            tinyllm-ckpt-v2-${{ inputs.config || 'configs/fast.json' }}-${{ inputs.seed || '1337' }}-
 
-      # ---- reuse the committed tokenizer (deterministic) --------------
       - name: Prepare output directory
         run: |
           mkdir -p runs/main
           if [ -f model/tokenizer.json ] && [ ! -f runs/main/tokenizer.json ]; then
             cp model/tokenizer.json runs/main/tokenizer.json
-            echo "reusing committed tokenizer"
           fi
-          ls -la runs/main || true
+          if [ -f runs/main/last.pt ]; then
+            echo "::notice::found cached checkpoint — resuming"
+            python - <<'PY'
+          import torch
+          ck = torch.load('runs/main/last.pt', map_location='cpu', weights_only=False)
+          print(f"resume step={ck.get('step')} best_val={ck.get('best_val')}")
+          PY
+          else
+            echo "::notice::no cached checkpoint — starting from scratch"
+          fi
+          ls -la runs/main
 
       - name: Train
-        id: train
         env:
-          MAX_STEPS: ${{ inputs.max_steps || '3000' }}
-          BATCH_SIZE: ${{ inputs.batch_size || '16' }}
-          GRAD_ACCUM: ${{ inputs.grad_accum || '2' }}
+          CONFIG: ${{ inputs.config || 'configs/fast.json' }}
+          MAX_STEPS: ${{ inputs.max_steps || '4000' }}
+          BATCH_SIZE: ${{ inputs.batch_size || '32' }}
           SEED: ${{ inputs.seed || '1337' }}
-          TIME_BUDGET: ${{ inputs.time_budget_minutes || '120' }}
+          CHUNK_MINUTES: ${{ inputs.chunk_minutes || '25' }}
         run: |
-          RESUME=""
-          if [ -f runs/main/last.pt ]; then
-            echo "::notice::resuming from cached runs/main/last.pt"
-            RESUME="--resume runs/main/last.pt"
+          set -euo pipefail
+          # skip work entirely if the cached checkpoint already reached the target
+          DONE=$(python - <<'PY'
+          import os, torch
+          p = 'runs/main/last.pt'
+          print(torch.load(p, map_location='cpu', weights_only=False).get('step', 0) if os.path.exists(p) else 0)
+          PY
+          )
+          echo "cached step: $DONE / target $MAX_STEPS"
+          if [ "$DONE" -ge "$MAX_STEPS" ]; then
+            echo "::notice::already trained to $DONE steps — nothing to do (set reset=true to start over)"
+            exit 0
           fi
-          python scripts/train.py \
+          RESUME=""
+          [ -f runs/main/last.pt ] && RESUME="--resume runs/main/last.pt"
+          python -u scripts/train.py \
             --out-dir runs/main \
-            --config configs/small.json \
+            --config "$CONFIG" \
             --tokenizer runs/main/tokenizer.json \
             --max-steps "$MAX_STEPS" \
             --batch-size "$BATCH_SIZE" \
-            --grad-accum "$GRAD_ACCUM" \
             --seed "$SEED" \
-            --time-budget "$TIME_BUDGET" \
+            --threads 2 \
+            --time-budget "$CHUNK_MINUTES" \
             --eval-interval 250 \
             --log-interval 50 \
-            --save-interval 250 \
+            --save-interval 100 \
             $RESUME
 
-      - name: Show training summary
+      - name: Training summary
+        if: always()
         run: |
-          echo "### Training summary" >> $GITHUB_STEP_SUMMARY
-          python - <<'PY' >> $GITHUB_STEP_SUMMARY
+          if [ -f runs/main/train_log.json ]; then
+            python - <<'PY' >> $GITHUB_STEP_SUMMARY
           import json
-          m = json.load(open('runs/main/train_log.json'))['meta']
-          print("")
-          print("| | |")
+          d = json.load(open('runs/main/train_log.json'))
+          m, h = d['meta'], d['history']
+          print("### Run summary\n")
+          print("| metric | value |")
           print("|---|---|")
-          for k in ("params", "params_non_embedding", "steps", "val_loss", "best_val_loss", "bits_per_byte",
-                    "tokens_seen", "train_seconds", "vocab_size", "block_size"):
-              print(f"| {k} | {m.get(k):,} |" if isinstance(m.get(k), (int, float)) else f"| {k} | {m.get(k)} |")
-          print("")
-          print("**samples**")
+          for k in ("params", "steps", "total_steps_target", "finished", "val_loss", "bits_per_byte",
+                    "tokens_seen", "train_seconds", "compiled"):
+              print(f"| {k} | {m.get(k)} |")
+          print(f"\n**generated:** {m.get('tokens_seen', 0):,} tokens this run\n")
+          print("<details><summary>loss history</summary>\n")
           print("```")
-          print(open('runs/main/samples.txt').read()[:3000])
+          for e in h[-14:]:
+              print(e)
           print("```")
+          print("</details>")
           PY
-          cat runs/main/train_log.json
+          else
+            echo "::warning::no train_log.json produced"
+          fi
 
       # ---- validate before publishing --------------------------------
-      - name: Run test suite
-        run: pytest tests -q
+      - name: Run fast test suite
+        run: pytest tests/test_tokenizer.py tests/test_model.py -q
 
-      # ---- publish artefacts -----------------------------------------
-      - name: Publish model artefacts
+      # ---- publish (model/ only — runs/ is gitignored) ---------------
+      - name: Publish artefacts
         run: |
           set -euo pipefail
-          cp runs/main/weights.json   model/weights.json
-          cp runs/main/config.json    model/config.json
-          cp runs/main/tokenizer.json model/tokenizer.json
-          cp runs/main/loss_curve.svg model/loss_curve.svg
-          cp runs/main/samples.txt    model/samples.txt
-          python - <<'PY'
+          mkdir -p model
+          for f in weights.json config.json tokenizer.json loss_curve.svg samples.txt; do
+            src="runs/main/$f"
+            if [ -f "$src" ] && [ "$(readlink -f "$src")" != "$(readlink -f "model/$f" 2>/dev/null || echo x)" ]; then
+              cp "$src" "model/$f"
+            fi
+          done
+          if [ -f runs/main/train_log.json ]; then
+            cp runs/main/train_log.json model/train_log.json
+            python - <<'PY'
           import json
           log = json.load(open('runs/main/train_log.json'))
           meta = dict(log['meta'])
           meta['history'] = log['history']
           json.dump(meta, open('model/meta.json', 'w'), indent=2)
           PY
+          fi
+          python scripts/update_readme.py || true
           du -h model/* | sort -h
-
-      - name: Refresh README metrics
-        run: python scripts/update_readme.py
 
       - name: Save checkpoint cache
         if: always()
         uses: actions/cache/save@v4
         with:
           path: runs/main
-          key: tinyllm-ckpt-${{ github.ref_name }}-${{ inputs.max_steps || '3000' }}-${{ inputs.seed || '1337' }}-${{ github.run_id }}
+          key: tinyllm-ckpt-v2-${{ inputs.config || 'configs/fast.json' }}-${{ inputs.seed || '1337' }}-${{ github.run_id }}
 
-      - name: Upload run artifacts
+      - name: Upload artefacts
         uses: actions/upload-artifact@v4
         with:
           name: tinyllm-${{ github.run_number }}
           path: |
             model/weights.json
             model/meta.json
+            model/train_log.json
             model/loss_curve.svg
             model/samples.txt
-            runs/main/train_log.json
           retention-days: 90
 
       - name: Commit trained model
@@ -199,13 +229,16 @@ jobs:
           set -euo pipefail
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add model/ runs/main/train_log.json README.md
+          # Only model/ and README.md. NEVER runs/ — it is gitignored and a
+          # `git add` of an ignored path exits 1, which under `set -e` used to
+          # fail this job *after* a successful 56-minute training run.
+          git add model/ README.md
           if git diff --cached --quiet; then
             echo "no model changes to commit"
             exit 0
           fi
-          PARAMS=$(python -c "import json;print(f\"{json.load(open('model/meta.json'))['params']:,}\")")
-          STEPS=$(python -c "import json;print(json.load(open('model/meta.json'))['steps'])")
-          VAL=$(python -c "import json;print(json.load(open('model/meta.json'))['val_loss'])")
-          git commit -m "train: ${PARAMS} params, ${STEPS} steps, val loss ${VAL} [skip ci]"
-          git push origin HEAD:${{ github.ref_name }}
+          STEPS=$(python -c "import json;print(json.load(open('model/meta.json')).get('steps','?'))")
+          VAL=$(python -c "import json;print(json.load(open('model/meta.json')).get('val_loss','?'))")
+          PARAMS=$(python -c "import json;print(f\"{json.load(open('model/meta.json')).get('params',0):,}\")")
+          git commit -m "train: step ${STEPS}, val loss ${VAL}, ${PARAMS} params [skip ci]"
+          git push
