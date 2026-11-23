@@ -299,3 +299,32 @@ def test_workflow_ignored_paths_match_gitignore():
                     cwd=root, capture_output=True,
                 )
                 assert result.returncode != 0, f"{wf.name}: '{path}' is gitignored but is committed"
+
+
+def test_workflow_publishes_before_gating_on_tests():
+    """A failing or flaky test must never discard a training chunk: the publish
+    and commit steps have to run before any test gate."""
+    import yaml
+
+    root = Path(__file__).resolve().parent.parent
+    data = yaml.safe_load((root / ".github" / "workflows" / "train.yml").read_text())
+    step_names = [s.get("name", "") for s in data["jobs"]["train"]["steps"]]
+
+    def index_of(fragment: str) -> int:
+        for i, name in enumerate(step_names):
+            if fragment.lower() in name.lower():
+                return i
+        return -1
+
+    publish = index_of("Publish artefacts")
+    commit = index_of("Commit trained model")
+    gate = index_of("Test suite")
+    train = index_of("Train")
+
+    assert train >= 0 and publish > train, "training must come before publish"
+    assert commit > publish, "commit after publish"
+    assert gate > commit, f"the test gate must run after the commit (got {step_names})"
+
+    # the gate must not be able to fail the job
+    gate_step = next(s for s in data["jobs"]["train"]["steps"] if "Test suite" in s.get("name", ""))
+    assert gate_step.get("continue-on-error") is True
