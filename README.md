@@ -10,6 +10,10 @@
 
 </div>
 
+<p align="center">
+  <img src="docs/demo-preview.png" alt="TinyLLM browser demo: prompt, sampling controls, generated Shakespeare, and the live token stream" width="880">
+</p>
+
 ---
 
 ## What this is
