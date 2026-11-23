@@ -42,12 +42,12 @@ It does not know any facts. It writes Shakespeare-flavoured English at a charact
 | Parameters | **3.54M** (3,536,384) |
 | Architecture | 4 layers · 4 heads · d_model 256 · context 192 |
 | Vocabulary | 1280 byte-BPE tokens |
-| Optimiser steps | **400** |
-| Tokens seen | see *steps × batch × context* below |
-| Validation loss | **3.2145** nats/token |
-| Bits per byte | — (computed at the end of training) |
+| Optimiser steps | **600** |
+| Tokens seen | 3.69M (3,686,400) |
+| Validation loss | **3.0012** nats/token |
+| Bits per byte | **2.255** (8.0 = random bytes) |
 | Training time | local GPU-less run (see `runs/main/train.log`) |
-| Loss trajectory | 3.504 → 3.215 |
+| Loss trajectory | 3.504 → 3.001 |
 
 <p align="center"><img src="model/loss_curve.svg" alt="training and validation loss" width="680"></p>
 <p align="center"><sub>train loss in blue, validation loss in green — rendered by scripts/train.py</sub></p>
@@ -57,13 +57,19 @@ It does not know any facts. It writes Shakespeare-flavoured English at a charact
 
 ```
 ROMEO:
-And God was thee in your to that my souls I you your have
-With the sort sovereign me to a of and wed,
-For and the vain ale you of womin the to to ph wars
-Or the of conspointentsing of pen and s, issupared and hed
-and to the dd of black s of of ashitorses and but the ses,
-a my thif king and of the of a ined; and him your a of a you
-wa reed
+Un God was the sew of this liberty s!
+
+LADY GREEN:
+I have have been sovereign me to a child:
+Take this beat the hunn an tit;
+I will not, for my dear heart and thy mother
+In your grace my hearts and the pounds, and our dispose ished
+Hath to the suf of to their blocks ask
+To the st fraisheel of their own pority,
+And we have not it on no more to this grace?
+
+KING VINCENTIO:
+You do have speak mayor no and to your 
 ```
 
 </details>

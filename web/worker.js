@@ -56,9 +56,11 @@ self.onmessage = (event) => {
       model.reset();
       let produced = 0;
       let text = "";
+      const pieces = [];
       // prime the KV cache with the prompt, one token at a time
       let logits = null;
       for (const id of priming) logits = model.forward([id]);
+      const windowLeft = Math.max(0, ctx - priming.length);
 
       const t0 = performance.now();
       let lastPost = t0;
@@ -71,11 +73,18 @@ self.onmessage = (event) => {
         });
         produced++;
         const piece = tokenizer.decode([next]);
+        pieces.push({ id: next, text: piece });
         text += piece;
-        if (produced % 2 === 0 || produced === maxTokens) {
-          self.postMessage({ type: "token", text, produced, promptTokens: ids.length });
+        if (produced % 3 === 0 || produced === maxTokens) {
+          self.postMessage({
+            type: "token",
+            text,
+            produced,
+            promptTokens: ids.length,
+            pieces: pieces.slice(),
+          });
         }
-        if (model._past[0].len >= ctx) break;
+        if (produced >= windowLeft) break;
         logits = model.forward([next]);
         // keep the UI responsive on long generations
         if (produced % 16 === 0) {
@@ -88,6 +97,7 @@ self.onmessage = (event) => {
         type: "done",
         text,
         produced,
+        pieces,
         promptTokens: ids.length,
         ms: Math.round(ms),
         tokPerSec: +(produced / (ms / 1000)).toFixed(2),

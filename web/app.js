@@ -24,6 +24,7 @@ const els = {
   output: $("output"),
   stats: $("stats"),
   progress: $("progress"),
+  tokenStrip: $("tokenStrip"),
   badges: {
     params: $("badge-params"),
     config: $("badge-config"),
@@ -63,6 +64,24 @@ function setOutput(prompt, text, streaming) {
     `<span class="new-part">${escape(text)}</span>` +
     (streaming ? '<span class="caret"></span>' : "");
   els.output.scrollTop = els.output.scrollHeight;
+}
+
+function renderTokens(pieces) {
+  if (!pieces || !pieces.length) {
+    els.tokenStrip.innerHTML = '<span class="empty">no tokens yet</span>';
+    return;
+  }
+  const esc = (t) => t.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+  const html = pieces
+    .slice(-400) // keep the DOM small on long generations
+    .map((p) => {
+      const blank = p.text.trim().length === 0;
+      const label = blank ? p.text.replace(/ /g, "·").replace(/\n/g, "⏎").replace(/\t/g, "⇥") || "·" : p.text;
+      return `<span class="tok${blank ? " ws" : ""}" title="token ${p.id}">${esc(label)}</span>`;
+    })
+    .join("");
+  els.tokenStrip.innerHTML = html;
+  els.tokenStrip.scrollTop = els.tokenStrip.scrollHeight;
 }
 
 function setBusy(busy) {
@@ -138,6 +157,7 @@ function onWorkerMessage(event) {
     const prompt = els.prompt.value;
     promptTokens = msg.promptTokens;
     setOutput(prompt, msg.text, true);
+    renderTokens(msg.pieces);
     const max = +$("maxTokens").value;
     els.progress.style.width = `${Math.min(100, (msg.produced / max) * 100)}%`;
     return;
@@ -146,6 +166,7 @@ function onWorkerMessage(event) {
     setBusy(false);
     els.progress.style.width = "100%";
     setOutput(els.prompt.value, msg.text, false);
+    renderTokens(msg.pieces);
     els.stats.textContent =
       `${msg.produced} tokens · ${msg.tokPerSec} tok/s · ${msg.ms} ms` +
       (msg.promptTokens ? ` · ${msg.promptTokens} prompt tokens` : "");
@@ -164,6 +185,7 @@ function generate() {
   els.progress.style.width = "0%";
   setBusy(true);
   setOutput(prompt, "", true);
+  els.tokenStrip.innerHTML = '<span class="empty">generating…</span>';
   els.stats.textContent = "…";
   worker.postMessage({
     type: "generate",

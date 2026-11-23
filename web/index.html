@@ -67,6 +67,13 @@
         </div>
         <pre id="output" class="output"><span class="muted">↑ press Generate to complete your prompt with the model. Everything — tokenizer, attention, sampling — happens on your machine.</span></pre>
         <div class="progress"><div class="bar" id="progress"></div></div>
+        <div class="token-strip-wrap">
+          <div class="strip-head">
+            <label>Token stream</label>
+            <span class="hint">each block is one BPE token the model emitted</span>
+          </div>
+          <div class="token-strip" id="tokenStrip"></div>
+        </div>
       </section>
 
       <details class="card about">

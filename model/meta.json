@@ -1,9 +1,4 @@
 {
-  "steps": 400,
-  "val_loss": 3.214530289173126,
-  "best_val_loss": 3.214530289173126,
-  "params": 3536384,
-  "params_non_embedding": 3159552,
   "config": {
     "name": "tiny-gpt-4m",
     "vocab_size": 1280,
@@ -17,6 +12,22 @@
     "gelu_tanh": true,
     "ln_eps": 1e-05
   },
+  "params": 3536384,
+  "params_non_embedding": 3159552,
+  "steps": 600,
+  "val_loss": 3.00119,
+  "best_val_loss": 3.00119,
+  "bits_per_byte": 2.2551,
+  "tokens_seen": 3686400,
+  "vocab_size": 1280,
+  "block_size": 192,
+  "batch_size": 32,
+  "grad_accum": 1,
+  "seed": 1337,
+  "train_seconds": null,
+  "device": "cpu",
+  "torch": "2.15.0+cu132",
+  "note": "published from the local run's latest checkpoint",
   "history": [
     {
       "step": 1,
@@ -70,7 +81,30 @@
     {
       "step": 400,
       "val_loss": 3.21453
+    },
+    {
+      "step": 450,
+      "train_loss": 2.92963,
+      "lr": 0.0008596
+    },
+    {
+      "step": 500,
+      "train_loss": 2.84918,
+      "lr": 0.0008467
+    },
+    {
+      "step": 550,
+      "train_loss": 2.77199,
+      "lr": 0.0008321
+    },
+    {
+      "step": 600,
+      "train_loss": 2.71548,
+      "lr": 0.000816
+    },
+    {
+      "step": 600,
+      "val_loss": 3.00119
     }
-  ],
-  "note": "intermediate checkpoint; replaced by the full 2400-step run"
+  ]
 }
