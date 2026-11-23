@@ -304,7 +304,7 @@ def test_workflow_ignored_paths_match_gitignore():
 def test_workflow_publishes_before_gating_on_tests():
     """A failing or flaky test must never discard a training chunk: the publish
     and commit steps have to run before any test gate."""
-    import yaml
+    yaml = pytest.importorskip("yaml")
 
     root = Path(__file__).resolve().parent.parent
     data = yaml.safe_load((root / ".github" / "workflows" / "train.yml").read_text())

@@ -25,7 +25,7 @@ jobs:
       - name: Install
         run: |
           pip install --index-url https://download.pytorch.org/whl/cpu torch
-          pip install numpy pytest fastapi httpx
+          pip install numpy pytest pyyaml fastapi httpx
 
       - name: Fast unit tests (tokenizer + model shapes)
         run: pytest tests/test_model.py tests/test_tokenizer.py -q
