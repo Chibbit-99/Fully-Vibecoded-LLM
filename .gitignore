@@ -5,13 +5,15 @@ __pycache__/
 *.egg-info/
 .pytest_cache/
 
-# Training scratch / checkpoints (large, machine-specific)
+# Training checkpoints are large and machine-specific; CI caches them instead.
 runs/
 *.pt
-*.bin.tmp
 
 # Editor / OS
 .DS_Store
 .idea/
 .vscode/
 node_modules/
+
+# Local scratch
+*.log.tmp

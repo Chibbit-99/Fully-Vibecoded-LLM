@@ -54,6 +54,8 @@ from tinyllm.dataset import (  # noqa: E402
 from tinyllm.model import GPT  # noqa: E402
 from tinyllm.tokenizer import ByteBPE  # noqa: E402
 
+REPO_ROOT = Path(__file__).resolve().parent.parent
+
 
 # ---------------------------------------------------------------------------
 # CLI
@@ -92,6 +94,11 @@ def parse_args(argv: List[str] | None = None) -> argparse.Namespace:
     t.add_argument("--seed", type=int, default=1337)
     t.add_argument("--time-budget", type=float, default=0.0, help="stop after N minutes (0 = no limit)")
     t.add_argument("--export", action="store_true", help="write weights.json even if not finished")
+    t.add_argument(
+        "--publish",
+        action="store_true",
+        help="also copy artefacts into model/ (what the GitHub workflow does)",
+    )
     return p.parse_args(argv)
 
 
@@ -396,6 +403,21 @@ def main(argv: List[str] | None = None) -> int:
     # ---- export for numpy / JS inference --------------------------------
     path = export_weights(model, config, tokenizer, out_dir)
     print(f"[export] {path} ({path.stat().st_size/1e6:.2f} MB)")
+
+    # ---- publish (mirror of the CI publish step) ------------------------
+    if args.publish:
+        import shutil
+
+        model_dir = REPO_ROOT / "model"
+        model_dir.mkdir(exist_ok=True)
+        for name in ("weights.json", "config.json", "tokenizer.json", "loss_curve.svg", "samples.txt"):
+            src = out_dir / name
+            if src.exists():
+                shutil.copy(src, model_dir / name)
+        publish_meta = dict(meta)
+        publish_meta["history"] = history
+        (model_dir / "meta.json").write_text(json.dumps(publish_meta, indent=2) + "\n")
+        print(f"[publish] copied artefacts to {model_dir}")
 
     print("\n--- samples ---")
     for s in samples:

@@ -158,19 +158,22 @@ jobs:
       - name: Publish model artefacts
         run: |
           set -euo pipefail
-          cp runs/main/weights.json model/weights.json
-          cp runs/main/config.json model/config.json
+          cp runs/main/weights.json   model/weights.json
+          cp runs/main/config.json    model/config.json
           cp runs/main/tokenizer.json model/tokenizer.json
           cp runs/main/loss_curve.svg model/loss_curve.svg
-          cp runs/main/samples.txt model/samples.txt
+          cp runs/main/samples.txt    model/samples.txt
           python - <<'PY'
           import json
           log = json.load(open('runs/main/train_log.json'))
-          meta = log['meta']
+          meta = dict(log['meta'])
           meta['history'] = log['history']
           json.dump(meta, open('model/meta.json', 'w'), indent=2)
           PY
           du -h model/* | sort -h
+
+      - name: Refresh README metrics
+        run: python scripts/update_readme.py
 
       - name: Save checkpoint cache
         if: always()
@@ -196,7 +199,7 @@ jobs:
           set -euo pipefail
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add model/ runs/main/train_log.json
+          git add model/ runs/main/train_log.json README.md
           if git diff --cached --quiet; then
             echo "no model changes to commit"
             exit 0

@@ -1,7 +1,76 @@
 {
-  "steps": 200,
-  "val_loss": 3.5041,
-  "bits_per_byte": 1.83,
+  "steps": 400,
+  "val_loss": 3.214530289173126,
+  "best_val_loss": 3.214530289173126,
   "params": 3536384,
-  "tokens_seen": 1228800
+  "params_non_embedding": 3159552,
+  "config": {
+    "name": "tiny-gpt-4m",
+    "vocab_size": 1280,
+    "block_size": 192,
+    "n_layer": 4,
+    "n_head": 4,
+    "n_embd": 256,
+    "dropout": 0.0,
+    "bias": true,
+    "tie_weights": true,
+    "gelu_tanh": true,
+    "ln_eps": 1e-05
+  },
+  "history": [
+    {
+      "step": 1,
+      "train_loss": 7.189,
+      "lr": 7.5e-06
+    },
+    {
+      "step": 50,
+      "train_loss": 5.28099,
+      "lr": 0.000375
+    },
+    {
+      "step": 100,
+      "train_loss": 3.88283,
+      "lr": 0.00075
+    },
+    {
+      "step": 150,
+      "train_loss": 3.5492,
+      "lr": 0.0008997
+    },
+    {
+      "step": 200,
+      "train_loss": 3.37027,
+      "lr": 0.0008976
+    },
+    {
+      "step": 200,
+      "val_loss": 3.50405
+    },
+    {
+      "step": 250,
+      "train_loss": 3.2528,
+      "lr": 0.0008937
+    },
+    {
+      "step": 300,
+      "train_loss": 3.16915,
+      "lr": 0.0008879
+    },
+    {
+      "step": 350,
+      "train_loss": 3.08999,
+      "lr": 0.0008803
+    },
+    {
+      "step": 400,
+      "train_loss": 3.02589,
+      "lr": 0.0008708
+    },
+    {
+      "step": 400,
+      "val_loss": 3.21453
+    }
+  ],
+  "note": "intermediate checkpoint; replaced by the full 2400-step run"
 }
