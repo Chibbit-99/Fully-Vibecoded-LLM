@@ -2,14 +2,14 @@
 <rect width="100%" height="100%" fill="#0d1117"/>
 <line x1="45" y1="315" x2="675" y2="315" stroke="#30363d"/>
 <line x1="45" y1="45" x2="45" y2="315" stroke="#30363d"/>
-<text x="37" y="319.0" fill="#8b949e" font-size="11" text-anchor="end" font-family="monospace">0.86</text>
-<text x="37" y="251.5" fill="#8b949e" font-size="11" text-anchor="end" font-family="monospace">2.48</text>
-<text x="37" y="184.0" fill="#8b949e" font-size="11" text-anchor="end" font-family="monospace">4.11</text>
-<text x="37" y="116.5" fill="#8b949e" font-size="11" text-anchor="end" font-family="monospace">5.74</text>
+<text x="37" y="319.0" fill="#8b949e" font-size="11" text-anchor="end" font-family="monospace">2.69</text>
+<text x="37" y="251.5" fill="#8b949e" font-size="11" text-anchor="end" font-family="monospace">3.86</text>
+<text x="37" y="184.0" fill="#8b949e" font-size="11" text-anchor="end" font-family="monospace">5.03</text>
+<text x="37" y="116.5" fill="#8b949e" font-size="11" text-anchor="end" font-family="monospace">6.19</text>
 <text x="37" y="49.0" fill="#8b949e" font-size="11" text-anchor="end" font-family="monospace">7.36</text>
-<polyline fill="none" stroke="#58a6ff" stroke-width="1.5" points="45.0,51.0 52.7,108.5 60.6,171.7 68.5,197.4 76.4,205.7 84.2,212.5 92.1,217.8 100.0,221.9 107.9,225.9 115.7,229.5 123.6,232.9 131.5,235.6 139.4,237.9 147.2,240.2 155.1,242.5 163.0,244.1 170.9,245.9 178.8,247.3 186.6,249.1 194.5,250.8 202.4,251.5 210.3,253.2 218.1,254.7 226.0,255.7 233.9,257.3 241.8,258.7 249.6,259.6 257.5,261.2 265.4,262.1 273.3,263.4 281.2,264.9 289.0,266.0 296.9,267.2 304.8,268.5 312.7,269.7 320.5,271.1 328.4,272.5 336.3,273.5 344.2,275.1 352.0,276.3 359.9,277.4 367.8,279.2 375.7,280.1 383.6,281.0 391.4,282.8 399.3,284.4 407.2,285.2 415.1,286.9 422.9,288.0 430.8,289.2 438.7,290.4 446.6,291.6 454.4,292.7 454.6,293.0 462.3,294.2 470.2,295.3 478.1,296.4 486.0,297.0 493.8,298.7 501.7,299.2 509.6,300.2 517.5,301.2 525.3,302.2 533.2,303.1 541.1,303.8 549.0,304.9 556.8,305.2 564.7,306.1 572.6,307.0 580.5,307.6 588.4,308.1 596.2,309.0 604.1,309.3 612.0,310.0 619.9,310.2 627.7,310.7 635.6,311.2 643.5,311.6 651.4,312.1 659.2,312.6 667.1,312.9 675.0,313.1"/>
-<polyline fill="none" stroke="#3fb950" stroke-width="2.5" points="84.2,207.7 123.6,224.3 163.0,230.3 202.4,232.8 241.8,233.2 281.2,231.5 320.5,229.8 359.9,224.1 399.3,220.5 438.7,213.6 478.1,208.6 517.5,201.5 556.8,198.2 596.2,192.6 635.6,189.4 675.0,188.8"/>
-<text x="675" y="343" fill="#8b949e" font-size="11" text-anchor="end" font-family="monospace">step 4000</text>
+<polyline fill="none" stroke="#58a6ff" stroke-width="1.5" points="45.0,53.3 106.9,133.4 170.0,221.4 233.1,257.1 296.2,268.2 359.4,278.3 422.5,285.8 485.6,291.6 548.7,297.2 611.9,302.3 675.0,306.8"/>
+<polyline fill="none" stroke="#3fb950" stroke-width="2.5" points="170.0,241.8 296.2,264.7 422.5,277.8 548.7,285.9 675.0,293.4"/>
+<text x="675" y="343" fill="#8b949e" font-size="11" text-anchor="end" font-family="monospace">step 500</text>
 <text x="53" y="33" fill="#58a6ff" font-size="12" font-family="monospace">train</text>
 <text x="105" y="33" fill="#3fb950" font-size="12" font-family="monospace">val</text>
 </svg>

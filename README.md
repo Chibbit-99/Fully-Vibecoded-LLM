@@ -42,12 +42,12 @@ It does not know any facts. It writes Shakespeare-flavoured English at a charact
 | Parameters | **2.05M** (2,050,176) |
 | Architecture | 4 layers · 4 heads · d_model 192 · context 128 |
 | Vocabulary | 1280 byte-BPE tokens |
-| Optimiser steps | **4,000** |
-| Tokens seen | 32.77M (32,768,000) |
-| Validation loss | **3.9589** nats/token |
-| Bits per byte | **2.968** (8.0 = random bytes) |
-| Training time | 22 min on CPU 25,276 tok/s |
-| Loss trajectory | 3.442 → 3.897 |
+| Optimiser steps | **500** |
+| Tokens seen | 4.10M (4,096,000) |
+| Validation loss | **3.0715** nats/token |
+| Bits per byte | **2.303** (8.0 = random bytes) |
+| Training time | 5 min on CPU 13,975 tok/s |
+| Loss trajectory | 3.955 → 3.062 |
 
 <p align="center"><img src="model/loss_curve.svg" alt="training and validation loss" width="680"></p>
 <p align="center"><sub>train loss in blue, validation loss in green — rendered by scripts/train.py</sub></p>
@@ -57,21 +57,16 @@ It does not know any facts. It writes Shakespeare-flavoured English at a charact
 
 ```
 ROMEO:
-It is a flatterer, but I am swift to you for the
-velarge-man purpose.
+It is to hear your lord:
+I will not see this man't to so.
 
-First Servingman:
-And I'll hang on, and shall have a bedly here
-That I should bear thee to this good condition.
-
-CAPULET:
-Go, get you hence; path like brief, disformion,
-Or will I the sudden of men of of your reason
-To the admir of here by the that your ine and humbering and be be instrage there.
-
-GLOUCESTER:
-You, better Richard----------
-B
+YORK:
+Aumper thy honour is the a honour;
+And he would be have ene and it fare in the world:
+Corcure of thy honour and freven my heart,
+And the patter of his pare and prehe to have w so farewell,
+And to he all in a well. it but are he the love in that readvice
+And his he is it is do it do so I would had not indeed, it I we was he as say, not we for
 ```
 
 </details>
