@@ -48,9 +48,17 @@ on:
         required: false
         default: "300"
       target_tokens:
-        description: "Total tokens for the stage (e.g. 40e6). Empty = sensible default"
+        description: "Total tokens for the stage (e.g. 20e6). Empty = sensible default"
         required: false
         default: ""
+      max_epochs:
+        description: "Cap the token budget at this many passes over the corpus (default 4)"
+        required: false
+        default: "4"
+      time_budget_minutes:
+        description: "Plan the step count to finish training within this many minutes (0 = off)"
+        required: false
+        default: "0"
       reset:
         description: "Ignore the checkpoint cache and start this stage from scratch"
         type: boolean
@@ -140,11 +148,14 @@ jobs:
             spore-1-36M) CONFIG=configs/spore_36m.json ;;
             *) echo "::error::unknown model $MODEL"; exit 1 ;;
           esac
+          # Defaults are chosen so the *epochs stay sane* rather than hitting a
+          # round token count. A fixed 40M over a ~2.5M-token corpus was 16
+          # passes; the trainer now also clamps with --max-epochs as a backstop.
           if [ -z "$TARGET_TOKENS" ]; then
             if [ "$STAGE" = "pretrain" ]; then
-              TARGET_TOKENS=40000000
+              TARGET_TOKENS=18000000
             else
-              TARGET_TOKENS=12000000
+              TARGET_TOKENS=6000000
             fi
           fi
           echo "config=$CONFIG" >> "${GITHUB_OUTPUT:-/dev/stdout}"
@@ -161,10 +172,10 @@ jobs:
             spore-1-36M) CONFIG=configs/spore_36m.json ;;
             *) echo "::error::unknown model $MODEL"; exit 1 ;;
           esac
-          TARGET_TOKENS="${{ inputs.target_tokens }}"
-          if [ -z "$TARGET_TOKENS" ]; then
-            if [ "$STAGE" = "pretrain" ]; then TARGET_TOKENS=40000000; else TARGET_TOKENS=12000000; fi
-          fi
+          # Single source of truth: use the value the "Resolve plan" step
+          # computed. This block used to repeat the 40M/12M defaults, so editing
+          # them in one place had no effect.
+          TARGET_TOKENS="${{ steps.plan.outputs.target_tokens }}"
           CHUNK_MINUTES="${{ inputs.chunk_minutes || '300' }}"
           OUT="runs/$MODEL"
           mkdir -p "$OUT"
@@ -192,6 +203,8 @@ jobs:
             --save-interval 200 \
             --eval-interval 100 \
             --early-stop-patience 4 \
+            --max-epochs "${{ inputs.max_epochs || '4' }}" \
+            --time-budget-minutes "${{ inputs.time_budget_minutes || '0' }}" \
             --export \
             $RESUME
 

@@ -197,21 +197,71 @@ do.
 
 ---
 
-## 8. Suggested patch (not applied here)
+## 8. What was implemented
 
-The `<unk>` fix is a three-line change in `clean_wikitext`, but it alters the
-corpus fingerprint and therefore invalidates in-flight training caches. Left
-unapplied deliberately:
+**Corpus recovery** — `clean_wikitext` now splits a line at `<unk>` instead of
+dropping it, keeping fragments of at least `UNK_MIN_WORDS` (6) words.
 
-```python
-# replace the drop-the-line rule with fragment recovery
-if "<unk>" in s:
-    keep = [p.strip() for p in s.split("<unk>") if len(p.split()) >= 6]
-    if not keep:
-        continue
-    out_lines.append(" ".join(keep))
-    continue
-```
+| | before | after |
+|---|---|---|
+| `prose_train` + `prose_val` | 2.51M tokens | **5.78M tokens** |
+| unique text | — | **+130%** |
+| corpus fingerprint | `6bbc444a…` | `40c26e6a…` |
 
-After that, rebuild, bump the fingerprint, and re-run both stages. Expected:
-2.4× the unique text at zero training cost.
+Two Q&A bugs surfaced once the recovered text was in play, both fixed:
+
+- `_clean_subject` stripped a leading article, so a WikiText article literally
+  titled "The" produced `"What did The win?"`. Bare articles are now rejected
+  before cleaning.
+- `_is_person_lead` matched a person noun anywhere in the sentence, so
+  *"The Food Album is a compilation album by American singer-songwriter …"*
+  became `"Who is The Food Album?"`. A `_WORK_LEAD` guard now rejects
+  album/song/film/book/place subjects, and the person noun must appear within
+  the first 120 characters instead of 220. `who-is` questions dropped from 21
+  to 14 — all genuine people.
+
+**Budget planning** — two new trainer flags:
+
+- `--max-epochs N` clamps the token budget to `N` passes over the corpus, so a
+  large `--token-budget` can no longer silently memorise a small corpus.
+  Verified: asking for 40M with `--max-epochs 4` logs
+  `clamping to avoid memorisation` and trains 23.9M.
+- `--time-budget-minutes N` converts a wall-clock budget into a step count via
+  a throughput model fitted to the measurements above
+  (`tok/s ≈ 19.4e9 / (params + 1.2e6)`, scaled 0.88 so it always
+  *under*-estimates). Erring low is deliberate: overestimating would overshoot
+  the time budget and get the job killed mid-chunk.
+
+**Workflow defaults** — `pretrain` now targets 18M tokens (was 40M), `sft` 6M
+(was 12M), with `max_epochs: 4` passed through. The "Train chunk" step used to
+repeat the 40M/12M defaults, so editing them in "Resolve plan" had no effect;
+it now reads `steps.plan.outputs.target_tokens`.
+
+### Result: both models under 24 hours
+
+| model | pretrain (3 epochs) | sft | total | fits 24h? |
+|---|---|---|---|---|
+| `spore-1-12M` | 3.4 h | 1.1 h | **4.5 h** | yes, 5× over |
+| `spore-1-36M` | 9.6 h | 3.2 h | **12.8 h** | yes |
+
+**What this costs.** Total tokens drop from 52M to 24M, so the 12M model
+sees 4.3 → 2.0 tokens/parameter and the 36M sees 1.4 → 0.7. That is a real
+reduction in compute per run, and it is not free. Two things offset it:
+
+* **The tokens are far less repetitive.** The old 52M was 15.9 passes over
+  2.51M unique tokens; the new 24M is 3.1 passes over 5.77M. Repeated text
+  contributes little gradient after the first pass, so 3 passes over 5.8M
+  presents roughly twice as much distinct material as 16 passes over 2.5M.
+* **Later passes were not helping anyway.** Validation loss on the old 40M
+  run flattened and then rose from about step 1200 (see
+  ``docs/PERFORMANCE.md`` §4) — the extra 14 CPU-hours bought memorisation,
+  not generalisation.
+
+Both remain far below Chinchilla's ~20 tokens/parameter, so the schedule is
+shaped by the 2-core host, not by what would be ideal. On this box the 36M
+lane is the binding constraint at 9.6 h of the 24 h for pretrain alone. On 8
+cores (assuming the usual sub-linear scaling, ~3.6x for 4x the cores) the
+36M would finish its 18M-token pretrain in roughly 2.7 h, leaving room for
+4-5x more unique data inside the same ceiling. `--time-budget-minutes` finds
+that headroom automatically if the runner gets faster; nothing here needs to
+be re-derived by hand.

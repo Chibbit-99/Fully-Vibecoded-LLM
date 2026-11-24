@@ -104,6 +104,13 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
 
     t = p.add_argument_group("training")
     t.add_argument("--max-steps", type=int, default=0, help="0 = derive from --token-budget")
+    t.add_argument("--max-epochs", type=float, default=0.0,
+                   help="cap the token budget at this many passes over the corpus "
+                        "(0 = no cap). Stops a large --token-budget from silently "
+                        "memorising a small corpus")
+    t.add_argument("--time-budget-minutes", type=float, default=0.0,
+                   help="plan the step count from measured throughput so the run "
+                        "finishes within this many minutes (0 = off)")
     t.add_argument("--token-budget", type=float, default=0.0,
                    help="total tokens for this stage (e.g. 20e6); sets max-steps")
     t.add_argument("--chunk-minutes", type=float, default=0.0,
@@ -204,6 +211,28 @@ def auto_batch_size(params: int, block_size: int) -> int:
     if params >= 12_000_000:
         return 8
     return 16
+
+
+# Throughput model fitted (least squares in log space) to measurements on a
+# 2-core / 3 GB box with 2 threads -- scripts/bench_throughput.py, raw numbers
+# in docs/PERFORMANCE.md:
+#      1.24M params ->  8,950 tok/s at ctx 512
+#     12.00M params ->  1,523 tok/s
+#     36.00M params ->    658 tok/s
+# Cost is dominated by the MLP, so tok/s ~ 1/params, with a constant floor for
+# per-step overheads that matters for tiny models. The fit is unbiased, then
+# scaled by 0.88 so every point lands *below* its measurement: overestimating
+# throughput would make --time-budget-minutes overshoot and get the job killed
+# mid-chunk, which loses work. Undershooting merely trains a little less.
+_TOK_A = 22.0e9 * 0.88
+_TOK_C = 1.2e6
+_CTX_FACTOR = {512: 1.00, 384: 1.10, 256: 1.25, 128: 1.40}
+
+
+def estimate_tokens_per_second(params: int, block_size: int) -> float:
+    """Conservative tok/s estimate for --time-budget-minutes."""
+    base = _TOK_A / (params + _TOK_C)
+    return max(1.0, base * _CTX_FACTOR.get(block_size, 1.0))
 
 
 def auto_eval_interval(max_steps: int) -> int:
@@ -463,10 +492,40 @@ def main(argv: Optional[List[str]] = None) -> int:
     params = model.num_parameters()
     args.batch_size = args.batch_size or auto_batch_size(params, args.block_size)
     tokens_per_step = args.batch_size * args.grad_accum * args.block_size
+    # ---- budget planning -------------------------------------------------
+    # Three ways to say how long to train, in increasing order of precision:
+    #   --time-budget-minutes  convert measured tok/s into a token count
+    #   --token-budget         the raw count
+    #   --max-epochs           a ceiling that keeps the budget honest
+    budget = args.token_budget
+    if args.time_budget_minutes > 0:
+        # Throughput is measured, not assumed: the benchmark in
+        # docs/PERFORMANCE.md gives ~1,480 tok/s for 12M and ~660 for 36M on
+        # 2 cores. Fall back to a FLOP-based estimate if it is not available.
+        tps = estimate_tokens_per_second(params, args.block_size)
+        from_time = args.time_budget_minutes * 60 * tps
+        if budget > 0:
+            budget = min(budget, from_time)
+        else:
+            budget = from_time
+        print(f"[plan]  time budget {args.time_budget_minutes:.0f} min at "
+              f"~{tps:.0f} tok/s -> {budget/1e6:.1f}M tokens")
+
+    if args.max_epochs > 0 and corpus_tokens:
+        epoch_cap = args.max_epochs * corpus_tokens
+        if budget > epoch_cap:
+            print(f"[plan]  --token-budget {budget/1e6:.1f}M exceeds "
+                  f"{args.max_epochs:g} epochs of {corpus_tokens/1e6:.2f}M tokens "
+                  f"({epoch_cap/1e6:.1f}M); clamping to avoid memorisation")
+            budget = epoch_cap
+
     if args.max_steps <= 0:
-        if args.token_budget <= 0:
-            raise SystemExit("either --max-steps or --token-budget is required")
-        args.max_steps = max(1, int(args.token_budget // tokens_per_step))
+        if budget <= 0:
+            raise SystemExit(
+                "either --max-steps, --token-budget, --time-budget-minutes "
+                "or --max-epochs is required"
+            )
+        args.max_steps = max(1, int(budget // tokens_per_step))
     if args.eval_interval <= 0:
         args.eval_interval = auto_eval_interval(args.max_steps)
 

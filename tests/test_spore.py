@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import random
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -453,3 +454,112 @@ def test_exported_weights_load_in_the_numpy_engine(tiny_setup):
     result = model.generate("the", max_new_tokens=4, seed=1)
     assert result["tokens_generated"] > 0
 
+
+
+# ---------------------------------------------------------------------------
+# budget planning: the knobs that keep training inside a wall-clock target
+# ---------------------------------------------------------------------------
+def test_throughput_estimate_never_overestimates():
+    """`--time-budget-minutes` must not overshoot.
+
+    The estimate is fitted to measurements in docs/PERFORMANCE.md and scaled
+    down on purpose: if it overestimates tok/s, a time budget converts to too
+    many steps and the job is killed mid-chunk, losing work. Undershooting just
+    trains slightly less.
+    """
+    from scripts.train_spore import estimate_tokens_per_second
+
+    measured = {1.24e6: 8950, 12e6: 1523, 36e6: 658}  # 2 cores, ctx 512
+    for params, real in measured.items():
+        est = estimate_tokens_per_second(int(params), 512)
+        assert est <= real, (
+            f"{params/1e6:.2f}M: estimate {est:.0f} tok/s exceeds the measured "
+            f"{real} — a time budget would overshoot"
+        )
+        # but not so far below as to be useless (note: 36M is the weakest fit)
+        assert est > real * 0.7, f"{params/1e6:.2f}M: estimate {est:.0f} is too low"
+
+
+def test_time_budget_converts_to_a_step_count(tiny_setup, tmp_path):
+    """A time budget must produce a finite, positive step target."""
+    _, data = tiny_setup
+    out = tmp_path / "tb"
+    r = subprocess.run(
+        [sys.executable, str(ROOT / "scripts" / "train_spore.py"),
+         "--config", str(ROOT / "configs" / "_test_tiny.json"),
+         "--out-dir", str(out), "--data-dir", str(data),
+         "--stage", "pretrain", "--time-budget-minutes", "30",
+         "--max-steps", "1", "--batch-size", "2", "--smoke", "--threads", "1"],
+        capture_output=True, text=True, timeout=300,
+    )
+    assert r.returncode == 0, r.stderr[-800:]
+    assert "time budget 30 min at ~" in r.stdout
+
+
+def test_max_epochs_clamps_an_oversized_token_budget(tiny_setup, tmp_path):
+    """Asking for more tokens than N epochs must be clamped, not honoured.
+
+    Regression: the workflow defaulted to 40M tokens over a ~2.5M-token corpus
+    (16 passes). Memorisation then shows up as rising validation loss, and the
+    run costs 22 CPU-hours to get there.
+    """
+    _, data = tiny_setup
+    out = tmp_path / "clamp"
+    r = subprocess.run(
+        [sys.executable, str(ROOT / "scripts" / "train_spore.py"),
+         "--config", str(ROOT / "configs" / "_test_tiny.json"),
+         "--out-dir", str(out), "--data-dir", str(data),
+         "--stage", "pretrain", "--token-budget", "1e12", "--max-epochs", "2",
+         "--max-steps", "1", "--batch-size", "2", "--smoke", "--threads", "1"],
+        capture_output=True, text=True, timeout=300,
+    )
+    assert r.returncode == 0, r.stderr[-800:]
+    assert "clamping to avoid memorisation" in r.stdout
+    assert "2 epochs of" in r.stdout
+
+
+def test_unk_recovery_keeps_the_wikitext_corpus_large():
+    """Dropping every line containing <unk> costs 86% of WikiText-2.
+
+    The builder splits at the hole and keeps fragments of >= UNK_MIN_WORDS
+    words instead. If this regresses, the corpus silently shrinks back to
+    ~2.5M unique tokens and every budget below becomes 2.3x over-epoch.
+    """
+    import importlib.util  # noqa: PLC0415
+
+    spec = importlib.util.spec_from_file_location(
+        "build_spore_data", ROOT / "scripts" / "build_spore_data.py"
+    )
+    bsd = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(bsd)
+
+    assert bsd.UNK_MIN_WORDS >= 4
+    raw = (ROOT / "data" / "raw_wikitext2.txt").read_text(encoding="utf-8", errors="replace")
+    cleaned = bsd.clean_wikitext(raw)
+    kept = len(cleaned)
+    # before the fix this was ~1.38M chars from 10.8M of input
+    assert kept > 8e6, f"only {kept/1e6:.2f}M chars survived cleaning; <unk> recovery regressed"
+    assert "<unk>" not in cleaned
+
+
+def test_person_questions_are_actually_about_people():
+    """"Who is X?" must not be asked of albums, places or books.
+
+    Regression: `_is_person_lead` matched a person noun anywhere in the
+    sentence, so "The Food Album is a compilation album by American
+    singer-songwriter ..." produced "Who is The Food Album?".
+    """
+    path = ROOT / "data" / "spore" / "qa.jsonl"
+    if not path.exists():
+        pytest.skip("corpus not built")
+    non_person = re.compile(
+        r"\b(album|song|single|film|movie|book|novel|game|band|company|"
+        r"route|road|highway|city|town|village|school|university|species|ship)\b",
+        re.I,
+    )
+    offenders = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        rec = json.loads(line)
+        if rec.get("kind") == "who-is" and non_person.search(rec["user"]):
+            offenders.append(rec["user"])
+    assert not offenders, f"'Who is' asked about non-people: {offenders[:5]}"
