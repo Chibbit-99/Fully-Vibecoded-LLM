@@ -758,3 +758,78 @@ def test_nested_resume_keeps_stage1_weights(tiny_setup, tmp_path):
     assert any(not torch.equal(after["model"][k], snapshot[k]) for k in snapshot), (
         "sft made no change to any weight"
     )
+
+
+def test_redispatching_a_finished_stage_does_not_retrain(tiny_setup, tmp_path):
+    """A finished checkpoint + the same plan must train zero steps.
+
+    Regression: `same_stage = ckpt_stage == args.stage and not ckpt_finished`
+    collapsed "finished, same stage" into "different stage", which reset
+    start_step to 0. Re-dispatching a completed stage therefore retrained from
+    the top -- while still loading the weights, so the log looked like a
+    legitimate resume. It also made the `[done]` guard unreachable for exactly
+    the case it was written for.
+
+    This is the failure the user hit: the 12M finished all 4394 steps, the
+    cache restored correctly, and training restarted at step 1.
+    """
+    _, data = tiny_setup
+    out = tmp_path / "done"
+
+    def run(steps: int) -> str:
+        r = subprocess.run(
+            [sys.executable, str(ROOT / "scripts" / "train_spore.py"),
+             "--config", str(ROOT / "configs" / "_test_tiny.json"),
+             "--out-dir", str(out), "--data-dir", str(data),
+             "--stage", "pretrain", "--max-steps", str(steps),
+             "--batch-size", "2", "--threads", "1", "--log-interval", "1000",
+             "--eval-interval", str(steps), "--save-interval", "1000", "--smoke"],
+            capture_output=True, text=True, timeout=600,
+        )
+        assert r.returncode == 0, r.stderr[-800:]
+        return r.stdout
+
+    run(4)
+    log = run(4)  # identical plan again
+
+    assert "already finished" in log, "finished checkpoint was not recognised:\n" + log[-1500:]
+    assert "[done]" in log, "no [done] message; the guard is unreachable again"
+    assert "step     1/" not in log and "step 1/" not in log, (
+        "training restarted from step 1 instead of doing nothing:\n" + log[-1500:]
+    )
+
+
+def test_a_finished_checkpoint_can_extend_to_a_longer_plan(tiny_setup, tmp_path):
+    """finished=True must not make the weights unusable for a longer plan.
+
+    "finished" means "this stage has nothing left to do at this step count",
+    not "these weights may never be trained again". Extending the plan should
+    continue from the checkpoint's step with a fresh optimizer, not restart.
+    """
+    _, data = tiny_setup
+    out = tmp_path / "extend"
+
+    def run(steps: int) -> str:
+        r = subprocess.run(
+            [sys.executable, str(ROOT / "scripts" / "train_spore.py"),
+             "--config", str(ROOT / "configs" / "_test_tiny.json"),
+             "--out-dir", str(out), "--data-dir", str(data),
+             "--stage", "pretrain", "--max-steps", str(steps),
+             "--batch-size", "2", "--threads", "1", "--log-interval", "1",
+             "--eval-interval", str(steps), "--save-interval", "1000", "--smoke"],
+            capture_output=True, text=True, timeout=600,
+        )
+        assert r.returncode == 0, r.stderr[-800:]
+        return r.stdout
+
+    run(3)
+    log = run(6)
+
+    assert "was finished at a shorter plan" in log, (
+        "extending a finished checkpoint did not report continuing:\n" + log[-1500:]
+    )
+    # the first logged step of the new run must be 4, i.e. it continued
+    first = next((ln for ln in log.splitlines() if ln.startswith("step ")), "")
+    assert first.split()[1].split("/")[0] == "4", (
+        f"expected to continue at step 4, got {first!r}"
+    )
