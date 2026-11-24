@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pytest
 import torch
+import yaml
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -563,3 +564,48 @@ def test_person_questions_are_actually_about_people():
         if rec.get("kind") == "who-is" and non_person.search(rec["user"]):
             offenders.append(rec["user"])
     assert not offenders, f"'Who is' asked about non-people: {offenders[:5]}"
+
+
+# ---------------------------------------------------------------------------
+# resumable-cache correctness: the failure mode is a *silent* stale resume
+# ---------------------------------------------------------------------------
+def test_workflow_cache_key_covers_corpus_and_plan():
+    """The cache key must change when the corpus or the step plan changes.
+
+    Both were silent traps. The key used to be (model, stage) only, so:
+
+      * a checkpoint trained on the old corpus was restored over a rebuilt one,
+        and because `out_dir/tokenizer.json` is reused, the tokenizer stayed
+        fit on the *old* text -- discarding the entire <unk> recovery;
+      * a checkpoint at step 39062 resumed into a plan of 4400 steps hits
+        `start_step >= max_steps` and exits with "nothing to do" without
+        training a single step.
+
+    A bare prefix in restore-keys re-introduces both, because a prefix match
+    happily returns the stale entries the key is meant to exclude.
+    """
+    wf = yaml.safe_load((ROOT / ".github" / "workflows" / "train_spore.yml").read_text())
+    steps = wf["jobs"]["train"]["steps"]
+    by_name = {s.get("name"): s for s in steps if s.get("name")}
+
+    restore = by_name["Restore checkpoint cache"]["with"]
+    save = by_name["Save checkpoint cache"]["with"]
+    for field in ("data_hash", "target_tokens"):
+        assert field in restore["key"], f"{field} missing from the restore key"
+        assert field in save["key"], f"{field} missing from the save key (restore would miss it)"
+
+    # a single line parses as a string, a multi-line block as a list
+    prefixes = restore.get("restore-keys", [])
+    if isinstance(prefixes, str):
+        prefixes = [prefixes]
+    for prefix in prefixes:
+        for field in ("data_hash", "target_tokens"):
+            assert field in prefix, (
+                f"restore-key {prefix!r} does not pin {field}: it can restore a "
+                f"checkpoint from a different corpus or step plan"
+            )
+
+    # the fingerprint and the plan must be computed before the cache is read
+    order = [s.get("name") for s in steps]
+    assert order.index("Corpus fingerprint") < order.index("Restore checkpoint cache")
+    assert order.index("Resolve plan (tokens -> steps)") < order.index("Restore checkpoint cache")

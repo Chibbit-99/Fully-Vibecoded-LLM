@@ -100,6 +100,11 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     g.add_argument("--out-dir", type=Path, required=True)
     g.add_argument("--data-dir", type=Path, default=DATA)
     g.add_argument("--tokenizer", type=Path, default=None, help="reuse a tokenizer.json")
+    g.add_argument("--data-hash", default=None,
+                   help="fingerprint of the corpus this run was planned against "
+                        "(warns if the cached tokenizer was fit on a different one)")
+    g.add_argument("--reset-tokenizer", action="store_true",
+                   help="delete a cached tokenizer.json and refit on the current corpus")
     g.add_argument("--stage", choices=["pretrain", "sft"], default="pretrain")
 
     t = p.add_argument_group("training")
@@ -184,6 +189,44 @@ def save_checkpoint(path: Path, model, optimizer, config, step, best_val, histor
         payload.update(extra)
     torch.save(payload, tmp)
     tmp.replace(path)
+
+
+def _check_tokenizer_matches_corpus(tokenizer, data_dir: Path, args, out_dir: Path) -> None:
+    """Refuse to train with a tokenizer that was fit on a different corpus.
+
+    Training reuses ``out_dir/tokenizer.json`` whenever it exists, which is what
+    makes chunked resumes cheap.  The danger is a *changed corpus*: the cached
+    tokenizer still encodes to its old merge table, so the new text is chopped
+    on old boundaries and any corpus-side improvement (e.g. recovering <unk>
+    lines) is silently discarded -- the run looks healthy and measures worse.
+
+    The fingerprint is recorded in ``out_dir/tokenizer_data_hash.txt`` when the
+    trainer is given ``--data-hash`` (the workflow computes it, because it
+    already needs it for the cache key).  A mismatch only *warns*: it is a
+    tripwire, not the enforcement.  Failing hard here would strand every
+    in-flight checkpoint, and a deliberate resume of old work is legitimate.
+    The workflow's cache key is what actually prevents the bad combination;
+    this makes it visible on a local run, where no cache key exists.
+    """
+    hash_path = out_dir / "tokenizer_data_hash.txt"
+    current = getattr(args, "data_hash", None)
+    if not current:
+        return
+    remembered = hash_path.read_text(encoding="utf-8").strip() if hash_path.exists() else None
+    if remembered is None:
+        # first run with fingerprinting: adopt the current corpus as the baseline
+        hash_path.write_text(current, encoding="utf-8")
+        return
+    if remembered != current:
+        print(
+            f"[warn] tokenizer was trained on corpus {remembered} but the data is "
+            f"now {current}.  Reusing {out_dir / 'tokenizer.json'} means the new "
+            f"text is tokenised with the old merge table.  Pass --reset-tokenizer "
+            f"(or delete it) to refit on the current corpus.",
+            flush=True,
+        )
+    else:
+        hash_path.write_text(current, encoding="utf-8")
 
 
 def configure_optimizer(model: GPT, weight_decay: float, lr: float) -> torch.optim.Optimizer:
@@ -447,9 +490,14 @@ def main(argv: Optional[List[str]] = None) -> int:
     # ---- config + tokenizer ---------------------------------------------
     config = GPTConfig.load(args.config)
     tok_path = args.tokenizer or (out_dir / "tokenizer.json")
+    if args.reset_tokenizer and tok_path.exists() and args.tokenizer is None:
+        tok_path.unlink()
+        (out_dir / "tokenizer_data_hash.txt").unlink(missing_ok=True)
+        print(f"[tokenizer] --reset-tokenizer: dropped {tok_path}")
     if tok_path.exists():
         tokenizer = ByteBPE.load(tok_path)
         print(f"[tokenizer] loaded {tok_path} (vocab={tokenizer.vocab_size})")
+        _check_tokenizer_matches_corpus(tokenizer, data_dir, args, out_dir)
     else:
         text = (data_dir / "prose_train.txt").read_text(encoding="utf-8")
         print("[tokenizer] training byte-level BPE ...", flush=True)

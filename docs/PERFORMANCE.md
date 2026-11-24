@@ -237,6 +237,28 @@ Two Q&A bugs surfaced once the recovered text was in play, both fixed:
 repeat the 40M/12M defaults, so editing them in "Resolve plan" had no effect;
 it now reads `steps.plan.outputs.target_tokens`.
 
+### The resume trap this exposed
+
+Making the corpus better made a pre-existing bug dangerous. The checkpoint
+cache key was `(model, stage)` only, and `data/spore` was cached inside that
+same entry, so a checkpoint trained on the old corpus was restored over a
+rebuilt one. Two independent failures follow, both silent:
+
+1. **The tokenizer is reused from the cached out-dir.** `tokenizer.json` exists,
+   so it is loaded instead of being refit, and the new text is encoded with the
+   old merge table. The entire `<unk>` recovery — 2.51M → 5.77M unique tokens —
+   never reaches the model. Nothing errors.
+2. **`start_step` is restored without reference to `max_steps`.** A checkpoint
+   at step 39062 (the old 40M plan) resumed into a 4400-step plan hits
+   `start_step >= max_steps`, prints "nothing to do", and trains zero steps.
+
+The cache key now includes the corpus fingerprint and the planned budget, and
+`restore-keys` no longer degrades to a bare `spore-ckpt-` prefix, which would
+have restored precisely the stale entries the key exists to exclude. The trainer
+also gained `--data-hash` (warns when the cached tokenizer was fit on a
+different corpus) and `--reset-tokenizer` to refit deliberately. A regression
+test pins both properties, because the failure mode has no error message.
+
 ### Result: both models under 24 hours
 
 | model | pretrain (3 epochs) | sft | total | fits 24h? |

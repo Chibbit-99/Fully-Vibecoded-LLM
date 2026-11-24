@@ -105,36 +105,17 @@ jobs:
           echo "cpus: $(nproc)  mem: $(free -g | awk '/^Mem/{print $2}')GB"
           python -c "import torch; print('torch', torch.__version__)"
 
-      # ---- resumable checkpoint cache ---------------------------------
-      # The key is stable per (model, stage) so restore-keys always finds the
-      # previous chunk, whichever run wrote it.
-      - name: Restore checkpoint cache
-        if: ${{ inputs.reset != true }}
-        id: cache
-        uses: actions/cache/restore@v4
-        with:
-          path: |
-            runs/${{ inputs.model || 'spore-1-12M' }}
-            data/spore
-          key: spore-ckpt-${{ inputs.model || 'spore-1-12M' }}-${{ inputs.stage || 'pretrain' }}-${{ github.run_id }}
-          restore-keys: |
-            spore-ckpt-${{ inputs.model || 'spore-1-12M' }}-${{ inputs.stage || 'pretrain' }}-
-
-      - name: Build corpus (cached between runs)
+      # ---- corpus fingerprint ------------------------------------------
+      # Computed BEFORE the cache restore because it is part of the cache key.
+      # Both inputs are tracked files, so this needs only a checkout.
+      - name: Corpus fingerprint
+        id: fp
         run: |
           set -euo pipefail
-          # fingerprint the inputs: raw text + the builder itself
-          DATA_HASH=$( (cat data/raw_wikitext2.txt data/raw_tinystories.txt scripts/build_spore_data.py || true) \
-                       | python -c "import hashlib,sys;print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest()[:16])" )
-          echo "data fingerprint: $DATA_HASH"
-          if [ -f data/spore/qa.jsonl ] && [ -f data/spore/.hash ] && \
-             [ "$(cat data/spore/.hash)" = "$DATA_HASH" ]; then
-            echo "::notice::corpus already built for this data revision — reusing"
-            python -c "import json;d=json.load(open('data/spore/qa_stats.json'));print({k:d[k] for k in ('records','articles','stories')})"
-          else
-            python scripts/build_spore_data.py
-            echo "$DATA_HASH" > data/spore/.hash
-          fi
+          FP=$( (cat data/raw_wikitext2.txt data/raw_tinystories.txt scripts/build_spore_data.py) \
+                 | python -c "import hashlib,sys;print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest()[:16])" )
+          echo "data_hash=$FP" >> "${GITHUB_OUTPUT:-/dev/stdout}"
+          echo "::notice::corpus fingerprint $FP"
 
       - name: Resolve plan (tokens -> steps)
         id: plan
@@ -161,6 +142,53 @@ jobs:
           echo "config=$CONFIG" >> "${GITHUB_OUTPUT:-/dev/stdout}"
           echo "target_tokens=$TARGET_TOKENS" >> "${GITHUB_OUTPUT:-/dev/stdout}"
           echo "::notice::$MODEL $STAGE target ${TARGET_TOKENS} tokens using $CONFIG"
+
+      # ---- resumable checkpoint cache ---------------------------------
+      # The key includes three things that silently corrupt a resume when they
+      # change, none of which are visible to the trainer (it restores step and
+      # best_val from last.pt without ever inspecting the data):
+      #
+      #   data_hash  -- the tokenizer is *reused* from the cached out-dir. If
+      #                 the corpus changes, the tokenizer (fit on the old text)
+      #                 and the new text disagree, and the <unk> recovery --
+      #                 the entire point of the current corpus -- never takes
+      #                 effect. This was a real trap: the key used to be
+      #                 (model, stage) only, so old checkpoints were restored
+      #                 over a rebuilt corpus.
+      #   plan       -- the max_steps derived from target_tokens/max_epochs.
+      #                 Resuming a checkpoint trained to step 39062 into a plan
+      #                 of 4400 steps hits `start_step >= max_steps` and prints
+      #                 "nothing to do" without training a single step.
+      #
+      # restore-keys is deliberately NO LONGER a bare prefix: a prefix match
+      # would restore exactly the stale entries this key is meant to exclude.
+      - name: Restore checkpoint cache
+        if: ${{ inputs.reset != true }}
+        id: cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            runs/${{ inputs.model || 'spore-1-12M' }}
+            data/spore
+          key: spore-ckpt-${{ inputs.model || 'spore-1-12M' }}-${{ inputs.stage || 'pretrain' }}-${{ steps.fp.outputs.data_hash }}-${{ steps.plan.outputs.target_tokens }}-${{ inputs.max_epochs || '4' }}-${{ github.run_id }}
+          restore-keys: |
+            spore-ckpt-${{ inputs.model || 'spore-1-12M' }}-${{ inputs.stage || 'pretrain' }}-${{ steps.fp.outputs.data_hash }}-${{ steps.plan.outputs.target_tokens }}-${{ inputs.max_epochs || '4' }}-
+
+      - name: Build corpus (cached between runs)
+        run: |
+          set -euo pipefail
+          # single source of truth: the fingerprint computed for the cache key
+          DATA_HASH="${{ steps.fp.outputs.data_hash }}"
+          echo "data fingerprint: $DATA_HASH"
+          if [ -f data/spore/qa.jsonl ] && [ -f data/spore/.hash ] && \
+             [ "$(cat data/spore/.hash)" = "$DATA_HASH" ]; then
+            echo "::notice::corpus already built for this data revision — reusing"
+            python -c "import json;d=json.load(open('data/spore/qa_stats.json'));print({k:d[k] for k in ('records','articles','stories')})"
+          else
+            python scripts/build_spore_data.py
+            echo "$DATA_HASH" > data/spore/.hash
+          fi
+
 
       - name: Train chunk
         run: |
@@ -205,6 +233,7 @@ jobs:
             --early-stop-patience 4 \
             --max-epochs "${{ inputs.max_epochs || '4' }}" \
             --time-budget-minutes "${{ inputs.time_budget_minutes || '0' }}" \
+            --data-hash "${{ steps.fp.outputs.data_hash }}" \
             --export \
             $RESUME
 
@@ -303,7 +332,7 @@ jobs:
           path: |
             runs/${{ inputs.model || 'spore-1-12M' }}
             data/spore
-          key: spore-ckpt-${{ inputs.model || 'spore-1-12M' }}-${{ inputs.stage || 'pretrain' }}-${{ github.run_id }}
+          key: spore-ckpt-${{ inputs.model || 'spore-1-12M' }}-${{ inputs.stage || 'pretrain' }}-${{ steps.fp.outputs.data_hash }}-${{ steps.plan.outputs.target_tokens }}-${{ inputs.max_epochs || '4' }}-${{ github.run_id }}
 
       - name: Upload artefacts
         if: always()
