@@ -59,12 +59,22 @@ room for install, corpus building and plotting. The default 300 is safe.
 Do these in order, in **Actions → Train Spore (12M / 36M) → Run workflow**.
 Re-run any row until its job summary says **Stage FINISHED**.
 
-| # | `model` | `stage` | `chunk_minutes` | `target_tokens` | typical runs |
-|---|---|---|---|---|---|
-| 1 | `spore-1-12M` | `pretrain` | `300` | *(blank → 40M)* | 1 |
-| 2 | `spore-1-12M` | `sft` | `300` | *(blank → 12M)* | 1 |
-| 3 | `spore-1-36M` | `pretrain` | `300` | *(blank → 40M)* | 2–4 |
-| 4 | `spore-1-36M` | `sft` | `300` | *(blank → 12M)* | 1–2 |
+| # | `model` | `stage` | `chunk_minutes` | `target_tokens` | start from scratch? | typical runs |
+|---|---|---|---|---|---|---|
+| 1 | `spore-1-12M` | `pretrain` | `300` | *(blank → 18M)* | first run only | 1 |
+| 2 | `spore-1-12M` | `sft` | `300` | *(blank → 6M)* | **never** | 1 |
+| 3 | `spore-1-36M` | `pretrain` | `300` | *(blank → 18M)* | first run only | 2 |
+| 4 | `spore-1-36M` | `sft` | `300` | *(blank → 6M)* | **never** | 1 |
+
+The defaults are 18M/6M rather than round token counts so that the epochs stay
+sane: 18M is ~3 passes over the 5.77M-token corpus, where a fixed 40M was ~7
+(it used to be 16 before the `<unk>` recovery roughly doubled the corpus).
+
+**Do not tick "start from scratch" on an `sft` row.** It discards the cache,
+so the pretrain weights are not restored; the job now fails with an explicit
+error rather than chat-tuning a randomly initialised model, which is what used
+to happen silently. `sft` reaches the pretrain checkpoint through its own
+restore-keys — see *How the two stages connect* below.
 
 After row 2 finishes, `spore-1-12M` is committed to `model/spore/spore-1-12M/`
 and the browser demo works. You do not have to finish the 36M model first.
@@ -216,6 +226,27 @@ never trained to predict the question or the context. Two details matter:
   counter. The trainer records the stage in every checkpoint and starts stage 2
   at step 0 while keeping stage 1's weights — otherwise SFT would inherit the
   finished step count and skip its entire schedule.
+
+#### How the two stages connect
+
+The checkpoint cache key contains the stage, so `pretrain` writes
+`spore-ckpt-<model>-pretrain-<corpus>-…` and `sft` looks first for
+`spore-ckpt-<model>-sft-<corpus>-…`. On its own that would never match, and SFT
+would quietly start from a random initialisation — the run looks healthy (loss
+falls, job passes) while being unrelated to the pretrained model. That was a
+real bug until the restore-keys became stage-aware:
+
+* **pretrain** restores one key, pinned to `(model, corpus, tokens, epochs)`.
+  Pinning matters: a checkpoint at step 39062 resumed into a 4400-step plan hits
+  `start_step >= max_steps` and trains nothing.
+* **sft** restores two, in order — first its own chunks (pinned the same way, so
+  the second chunk of a long SFT resumes correctly), then the pretrain
+  checkpoint **unpinned**, because SFT targets 6M while pretrain targeted 18M,
+  so a pinned key could never match.
+
+Leaving that last key loose is safe precisely because the stage differs: the
+trainer sees `ckpt_stage != args.stage`, applies those weights, and starts stage
+2 at step 0 with a fresh schedule. It cannot inherit a stale step count.
 
 ---
 

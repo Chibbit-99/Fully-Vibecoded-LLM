@@ -336,9 +336,23 @@ def load_chat(data_dir: Path, tokenizer: ByteBPE, args) -> Tuple[Any, np.ndarray
             f"missing {qa_path}; run `python scripts/build_spore_data.py` first"
         )
     records = load_qa(qa_path)
-    train = build_sft_data(tokenizer, records, repeat=args.sft_repeat, shuffle_seed=args.seed)
-    # held-out slice for validation: every 10th record, no repeat
+    # Validation must be *disjoint* from training.  This used to read
+    #   train = build_sft_data(records)          # every record, including held
+    #   held  = records[::10]                    # ...which is also the val slice
+    # so all ~1,900 validation examples were trained on.  `best_val` then
+    # measured memorisation rather than generalisation, and the patience
+    # counter could never fire for the right reason: the model was being
+    # scored on text it had just been fitted to.
+    #
+    # The [::10] slice is a good *sample* -- it holds ~10% of every question
+    # kind, so removing it does not skew the mix -- it was simply never
+    # subtracted from the training half.
     held = records[::10]
+    train_recs = [r for i, r in enumerate(records) if i % 10 != 0]
+    print(f"[data] sft split: {len(train_recs):,} train / {len(held):,} held-out "
+          f"({100 * len(held) / max(1, len(records)):.1f}% validation, disjoint)")
+    train = build_sft_data(tokenizer, train_recs, repeat=args.sft_repeat,
+                           shuffle_seed=args.seed)
     val = build_sft_data(tokenizer, held, repeat=1, shuffle_seed=args.seed + 1)
     return train, val
 

@@ -141,6 +141,39 @@ jobs:
           fi
           echo "config=$CONFIG" >> "${GITHUB_OUTPUT:-/dev/stdout}"
           echo "target_tokens=$TARGET_TOKENS" >> "${GITHUB_OUTPUT:-/dev/stdout}"
+
+          # ---- restore-keys --------------------------------------------------
+          # Cache keys are matched by POSITIONAL PREFIX, so these must be
+          # literal heads of the keys that were saved.
+          #
+          # pretrain: one key, pinned to (corpus, tokens, epochs). Pinning
+          # matters here: resuming a checkpoint at step 39062 into a 4400-step
+          # plan hits `start_step >= max_steps` and silently trains nothing.
+          #
+          # sft: TWO keys, in order.
+          #   1. its own chunks, pinned the same way (the 36M needs 2 jobs);
+          #   2. the pretrain checkpoint, deliberately NOT pinned to
+          #      tokens/epochs, because SFT targets 6M while pretrain targeted
+          #      18M. Pinning would never match. Leaving it loose is safe
+          #      precisely because the stage differs: the trainer sees
+          #      ckpt_stage != args.stage and starts stage 2 at step 0 from
+          #      those *weights*, so the step-count hazard above cannot apply.
+          DATA_HASH="${{ steps.fp.outputs.data_hash }}"
+          MAX_EPOCHS="${{ inputs.max_epochs || '4' }}"
+          PREFIX="spore-ckpt-${MODEL}"
+          if [ "$STAGE" = "sft" ]; then
+            KEYS="$(printf '%s-sft-%s-%s-%s-\n%s-pretrain-%s-' \
+              "$PREFIX" "$DATA_HASH" "$TARGET_TOKENS" "$MAX_EPOCHS" \
+              "$PREFIX" "$DATA_HASH")"
+          else
+            KEYS="$(printf '%s-pretrain-%s-%s-%s-' \
+              "$PREFIX" "$DATA_HASH" "$TARGET_TOKENS" "$MAX_EPOCHS")"
+          fi
+          {
+            echo "restore_keys<<__KEYS__"
+            echo "$KEYS"
+            echo "__KEYS__"
+          } >> "${GITHUB_OUTPUT:-/dev/stdout}"
           echo "::notice::$MODEL $STAGE target ${TARGET_TOKENS} tokens using $CONFIG"
 
       # ---- resumable checkpoint cache ---------------------------------
@@ -171,8 +204,7 @@ jobs:
             runs/${{ inputs.model || 'spore-1-12M' }}
             data/spore
           key: spore-ckpt-${{ inputs.model || 'spore-1-12M' }}-${{ inputs.stage || 'pretrain' }}-${{ steps.fp.outputs.data_hash }}-${{ steps.plan.outputs.target_tokens }}-${{ inputs.max_epochs || '4' }}-${{ github.run_id }}
-          restore-keys: |
-            spore-ckpt-${{ inputs.model || 'spore-1-12M' }}-${{ inputs.stage || 'pretrain' }}-${{ steps.fp.outputs.data_hash }}-${{ steps.plan.outputs.target_tokens }}-${{ inputs.max_epochs || '4' }}-
+          restore-keys: ${{ steps.plan.outputs.restore_keys }}
 
       - name: Build corpus (cached between runs)
         run: |
@@ -218,6 +250,17 @@ jobs:
           PY
           else
             echo "::notice::no cached checkpoint — starting this stage from scratch"
+            # A pretrain stage starting cold is normal.  An *sft* stage starting
+            # cold is not: it means the pretrain checkpoint was never restored
+            # (wrong cache, evicted, or reset ticked), and chat-tuning a randomly
+            # initialised model produces a run that looks healthy -- loss falls,
+            # the job succeeds -- while being useless.  Fail loudly instead.
+            if [ "$STAGE" = "sft" ]; then
+              echo "::error::sft needs the pretrain checkpoint but none was restored."
+              echo "::error::Run stage=pretrain for $MODEL to completion first, or"
+              echo "::error::check that its cache still exists and matches the corpus."
+              exit 1
+            fi
           fi
 
           python -u scripts/train_spore.py \
