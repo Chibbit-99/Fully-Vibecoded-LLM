@@ -72,6 +72,11 @@ _OPEN_PUNCT = re.compile(r"([(\[])\s+")
 _DOUBLE_SPACE = re.compile(r"[ \t]{2,}")
 _PAIRED_DOUBLE = re.compile(r'""\s*([^"]{1,60}?)\s*""')
 _PAIRED_SINGLE = re.compile(r"''\s*([^']{1,60}?)\s*''")
+# A fragment created by splitting a line at "<unk>" must be at least this many
+# words to count as prose. Below 6 the output is mostly sentence stubs like
+# "season of", which add noise rather than signal.
+UNK_MIN_WORDS = 6
+
 _QUOTE_JUNK = re.compile(r'^[\s"\'`\-–—.,;:!?()\[\]{}|/\\*#=+_~^·•]+$')
 
 
@@ -117,16 +122,34 @@ def clean_wikitext(raw: str) -> str:
             continue  # stray quote/punctuation lines left by the tokeniser
         level, title = parse_heading(s)
         if level is not None:
+            # A heading whose title is a rare word arrives as "### <unk>".
+            # Emitting it would inject the literal token into the corpus and
+            # leave a meaningless section marker; drop the heading instead.
+            if "<unk>" in title:
+                continue
+            # the hyphen glue below is applied to body lines only, so headings
+            # kept raw markers: "In Through the Looking @-@ Glass"
+            title = re.sub(r"\s*@-@\s*", "-", title).strip()
+            if not title:
+                continue
             # level 1 = article, level >= 2 = section inside the article
             marker = "##" if level == 1 else "###"
             out_lines.append(f"\n{marker} {title}\n")
             continue
         # hyphenated compounds: "side @-@ by @-@ side" -> "side-by-side"
         s = re.sub(r"\s*@-@\s*", "-", s)
-        # "<unk>" reads as a hole in the sentence; drop the line, the model
-        # must never learn to emit "<unk>"
+        # "<unk>" marks a rare word the WikiText tokeniser could not represent.
+        # Dropping the whole line (what this used to do) discards 86% of the
+        # corpus: 14,334 of 24,974 non-blank lines contain it and they hold
+        # 9.32 MB of the 10.77 MB total. Splitting at the hole keeps the
+        # surrounding prose; fragments too short to be sentences are dropped
+        # because a 3-word stub teaches nothing.
         if "<unk>" in s:
-            continue
+            fragments = [f.strip() for f in s.split("<unk>")]
+            keep = [f for f in fragments if len(f.split()) >= UNK_MIN_WORDS]
+            if not keep:
+                continue
+            s = " ".join(keep)
         # "Joseph Michael "" Joe "" Nathan" -> 'Joseph Michael "Joe" Nathan'
         s = _PAIRED_DOUBLE.sub(lambda m: f'"{m.group(1)}"', s)
         s = _PAIRED_SINGLE.sub(lambda m: f"'{m.group(1)}'", s)
@@ -220,9 +243,21 @@ _EVENT = re.compile(
 _LOCATED = re.compile(r"\b(city|town|village|country|county|state|region|island|river|mountain|district)\b", re.I)
 
 
+_LEADING_ARTICLE = re.compile(r"^(The|A|An|This|These|Those)\s+", re.I)
+_BARE_ARTICLE = re.compile(r"^(The|A|An|This|These|Those)$", re.I)
+
+
 def _clean_subject(subj: str) -> str:
-    """Drop a leading article so questions read naturally."""
-    return re.sub(r"^(The|A|An|This|These|Those)\s+", "", subj.strip())
+    """Drop a leading article so questions read naturally.
+
+    A subject that is *only* an article is not a subject at all. WikiText has
+    articles literally titled "The", and without this they produced questions
+    like "What did The win?".
+    """
+    subj = subj.strip()
+    if _BARE_ARTICLE.match(subj):
+        return ""
+    return _LEADING_ARTICLE.sub("", subj)
 
 
 # A subject must look like a name or a noun phrase, not a sentence fragment or a
@@ -256,6 +291,8 @@ def _valid_subject(subj: str, max_words: int = 6) -> bool:
     """
     if not subj or not subj[0].isupper():
         return False
+    if _BARE_ARTICLE.match(subj.strip()):
+        return False
     if not (1 <= len(subj.split()) <= max_words):
         return False
     if _BAD_SUBJ_START.match(subj) or _BAD_SUBJ_CHARS.search(subj):
@@ -288,14 +325,38 @@ _PERSON_LEAD = re.compile(
 _PERSON_BORN = re.compile(r"^[A-Z][^(]{1,60}?\(\s*(?:born|b\.)\s", re.I)
 
 
+# A sentence that is *about* a work, not a person, regardless of what nouns
+# appear later in it. "The Food Album is a compilation album by American
+# singer-songwriter Weird Al Yankovic" contains "singer", but the subject is
+# an album: matching any person noun anywhere produced "Who is The Food Album?".
+_WORK_LEAD = re.compile(
+    r"\b(is|was)\s+(?:a|an|the)\s+[\w\s-]{0,40}?\b("
+    r"album|song|single|film|movie|book|novel|magazine|newspaper|journal|"
+    r"game|video game|series|episode|painting|sculpture|building|bridge|"
+    r"company|organisation|organization|band|route|road|highway|station|"
+    r"school|university|college|village|town|city|county|province|state|"
+    r"species|genus|family|disease|ship|vessel|aircraft)\b",
+    re.I,
+)
+
+
 def _is_person_lead(sent: str) -> bool:
-    """True only for a genuine biography opening sentence."""
+    """True only for a genuine biography opening sentence.
+
+    Two independent guards, because one is not enough: the subject must match
+    the name shape in _PERSON_LEAD, *and* the sentence must not describe a work
+    or place. The person noun has to appear in the predicate near the subject,
+    not merely somewhere in the first 220 characters.
+    """
     if _PERSON_BORN.match(sent):
         return True
+    if _WORK_LEAD.search(sent[:220]):
+        return False
     if not _PERSON_LEAD.match(sent):
         return False
-    # the person noun must appear in the predicate, not hundreds of chars later
-    return _PERSON_WORDS.search(sent[:220]) is not None
+    # "X is a footballer" -> person; "X is a compilation album by a singer"
+    # already returned above. Look only at the start of the predicate.
+    return _PERSON_WORDS.search(sent[:120]) is not None
 
 
 def _question_subject(subj: str) -> Optional[str]:

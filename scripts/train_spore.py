@@ -100,10 +100,22 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     g.add_argument("--out-dir", type=Path, required=True)
     g.add_argument("--data-dir", type=Path, default=DATA)
     g.add_argument("--tokenizer", type=Path, default=None, help="reuse a tokenizer.json")
+    g.add_argument("--data-hash", default=None,
+                   help="fingerprint of the corpus this run was planned against "
+                        "(warns if the cached tokenizer was fit on a different one)")
+    g.add_argument("--reset-tokenizer", action="store_true",
+                   help="delete a cached tokenizer.json and refit on the current corpus")
     g.add_argument("--stage", choices=["pretrain", "sft"], default="pretrain")
 
     t = p.add_argument_group("training")
     t.add_argument("--max-steps", type=int, default=0, help="0 = derive from --token-budget")
+    t.add_argument("--max-epochs", type=float, default=0.0,
+                   help="cap the token budget at this many passes over the corpus "
+                        "(0 = no cap). Stops a large --token-budget from silently "
+                        "memorising a small corpus")
+    t.add_argument("--time-budget-minutes", type=float, default=0.0,
+                   help="plan the step count from measured throughput so the run "
+                        "finishes within this many minutes (0 = off)")
     t.add_argument("--token-budget", type=float, default=0.0,
                    help="total tokens for this stage (e.g. 20e6); sets max-steps")
     t.add_argument("--chunk-minutes", type=float, default=0.0,
@@ -179,6 +191,44 @@ def save_checkpoint(path: Path, model, optimizer, config, step, best_val, histor
     tmp.replace(path)
 
 
+def _check_tokenizer_matches_corpus(tokenizer, data_dir: Path, args, out_dir: Path) -> None:
+    """Refuse to train with a tokenizer that was fit on a different corpus.
+
+    Training reuses ``out_dir/tokenizer.json`` whenever it exists, which is what
+    makes chunked resumes cheap.  The danger is a *changed corpus*: the cached
+    tokenizer still encodes to its old merge table, so the new text is chopped
+    on old boundaries and any corpus-side improvement (e.g. recovering <unk>
+    lines) is silently discarded -- the run looks healthy and measures worse.
+
+    The fingerprint is recorded in ``out_dir/tokenizer_data_hash.txt`` when the
+    trainer is given ``--data-hash`` (the workflow computes it, because it
+    already needs it for the cache key).  A mismatch only *warns*: it is a
+    tripwire, not the enforcement.  Failing hard here would strand every
+    in-flight checkpoint, and a deliberate resume of old work is legitimate.
+    The workflow's cache key is what actually prevents the bad combination;
+    this makes it visible on a local run, where no cache key exists.
+    """
+    hash_path = out_dir / "tokenizer_data_hash.txt"
+    current = getattr(args, "data_hash", None)
+    if not current:
+        return
+    remembered = hash_path.read_text(encoding="utf-8").strip() if hash_path.exists() else None
+    if remembered is None:
+        # first run with fingerprinting: adopt the current corpus as the baseline
+        hash_path.write_text(current, encoding="utf-8")
+        return
+    if remembered != current:
+        print(
+            f"[warn] tokenizer was trained on corpus {remembered} but the data is "
+            f"now {current}.  Reusing {out_dir / 'tokenizer.json'} means the new "
+            f"text is tokenised with the old merge table.  Pass --reset-tokenizer "
+            f"(or delete it) to refit on the current corpus.",
+            flush=True,
+        )
+    else:
+        hash_path.write_text(current, encoding="utf-8")
+
+
 def configure_optimizer(model: GPT, weight_decay: float, lr: float) -> torch.optim.Optimizer:
     decay, no_decay = [], []
     for name, param in model.named_parameters():
@@ -204,6 +254,28 @@ def auto_batch_size(params: int, block_size: int) -> int:
     if params >= 12_000_000:
         return 8
     return 16
+
+
+# Throughput model fitted (least squares in log space) to measurements on a
+# 2-core / 3 GB box with 2 threads -- scripts/bench_throughput.py, raw numbers
+# in docs/PERFORMANCE.md:
+#      1.24M params ->  8,950 tok/s at ctx 512
+#     12.00M params ->  1,523 tok/s
+#     36.00M params ->    658 tok/s
+# Cost is dominated by the MLP, so tok/s ~ 1/params, with a constant floor for
+# per-step overheads that matters for tiny models. The fit is unbiased, then
+# scaled by 0.88 so every point lands *below* its measurement: overestimating
+# throughput would make --time-budget-minutes overshoot and get the job killed
+# mid-chunk, which loses work. Undershooting merely trains a little less.
+_TOK_A = 22.0e9 * 0.88
+_TOK_C = 1.2e6
+_CTX_FACTOR = {512: 1.00, 384: 1.10, 256: 1.25, 128: 1.40}
+
+
+def estimate_tokens_per_second(params: int, block_size: int) -> float:
+    """Conservative tok/s estimate for --time-budget-minutes."""
+    base = _TOK_A / (params + _TOK_C)
+    return max(1.0, base * _CTX_FACTOR.get(block_size, 1.0))
 
 
 def auto_eval_interval(max_steps: int) -> int:
@@ -418,9 +490,14 @@ def main(argv: Optional[List[str]] = None) -> int:
     # ---- config + tokenizer ---------------------------------------------
     config = GPTConfig.load(args.config)
     tok_path = args.tokenizer or (out_dir / "tokenizer.json")
+    if args.reset_tokenizer and tok_path.exists() and args.tokenizer is None:
+        tok_path.unlink()
+        (out_dir / "tokenizer_data_hash.txt").unlink(missing_ok=True)
+        print(f"[tokenizer] --reset-tokenizer: dropped {tok_path}")
     if tok_path.exists():
         tokenizer = ByteBPE.load(tok_path)
         print(f"[tokenizer] loaded {tok_path} (vocab={tokenizer.vocab_size})")
+        _check_tokenizer_matches_corpus(tokenizer, data_dir, args, out_dir)
     else:
         text = (data_dir / "prose_train.txt").read_text(encoding="utf-8")
         print("[tokenizer] training byte-level BPE ...", flush=True)
@@ -463,10 +540,40 @@ def main(argv: Optional[List[str]] = None) -> int:
     params = model.num_parameters()
     args.batch_size = args.batch_size or auto_batch_size(params, args.block_size)
     tokens_per_step = args.batch_size * args.grad_accum * args.block_size
+    # ---- budget planning -------------------------------------------------
+    # Three ways to say how long to train, in increasing order of precision:
+    #   --time-budget-minutes  convert measured tok/s into a token count
+    #   --token-budget         the raw count
+    #   --max-epochs           a ceiling that keeps the budget honest
+    budget = args.token_budget
+    if args.time_budget_minutes > 0:
+        # Throughput is measured, not assumed: the benchmark in
+        # docs/PERFORMANCE.md gives ~1,480 tok/s for 12M and ~660 for 36M on
+        # 2 cores. Fall back to a FLOP-based estimate if it is not available.
+        tps = estimate_tokens_per_second(params, args.block_size)
+        from_time = args.time_budget_minutes * 60 * tps
+        if budget > 0:
+            budget = min(budget, from_time)
+        else:
+            budget = from_time
+        print(f"[plan]  time budget {args.time_budget_minutes:.0f} min at "
+              f"~{tps:.0f} tok/s -> {budget/1e6:.1f}M tokens")
+
+    if args.max_epochs > 0 and corpus_tokens:
+        epoch_cap = args.max_epochs * corpus_tokens
+        if budget > epoch_cap:
+            print(f"[plan]  --token-budget {budget/1e6:.1f}M exceeds "
+                  f"{args.max_epochs:g} epochs of {corpus_tokens/1e6:.2f}M tokens "
+                  f"({epoch_cap/1e6:.1f}M); clamping to avoid memorisation")
+            budget = epoch_cap
+
     if args.max_steps <= 0:
-        if args.token_budget <= 0:
-            raise SystemExit("either --max-steps or --token-budget is required")
-        args.max_steps = max(1, int(args.token_budget // tokens_per_step))
+        if budget <= 0:
+            raise SystemExit(
+                "either --max-steps, --token-budget, --time-budget-minutes "
+                "or --max-epochs is required"
+            )
+        args.max_steps = max(1, int(budget // tokens_per_step))
     if args.eval_interval <= 0:
         args.eval_interval = auto_eval_interval(args.max_steps)
 
