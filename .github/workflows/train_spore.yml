@@ -87,6 +87,15 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # Training runs for hours, so `main` can legitimately advance between
+          # dispatch and the commit step (another model's run finishing, a PR
+          # merged). The commit step rebases onto main to handle that, which
+          # needs real history: the default fetch-depth of 1 gives a shallow
+          # clone with no common ancestor, so `git rebase origin/main` fails
+          # with "unrelated histories" and the commit is lost after the
+          # expensive part has already succeeded.
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -418,7 +427,35 @@ jobs:
           # never reads as though the stage had converged.
           TAG=$(python -c "import json;m=json.load(open('$MODEL_DIR/meta.json'));print(' (preview, step %s/%s)' % (m.get('steps'),m.get('max_steps'))) if m.get('preview') else ''" 2>/dev/null || echo "")
           git commit -m "spore: ${NAME} update${TAG} [skip ci]"
-          git push
+
+          # `main` may have moved while this job trained: another model's run
+          # can finish first, or a PR can merge. A bare `git push` then fails
+          # as non-fast-forward and the whole result is stranded -- the failure
+          # lands *after* hours of work, behind a green "publish succeeded".
+          # Rebase onto whatever main is now, then push. Retry, because the
+          # window can reopen between the rebase and the push.
+          for attempt in 1 2 3; do
+            git fetch origin main
+            if git rebase origin/main; then
+              if git push origin HEAD:main; then
+                echo "::notice::pushed model commit on attempt $attempt"
+                exit 0
+              fi
+            else
+              # A real conflict means two runs edited the same model file in
+              # a way git cannot merge. Abort and report; never force.
+              git rebase --abort || true
+              echo "::error::rebase onto main conflicted; not forcing a push."
+              echo "::error::Re-run this stage: it will resume from the cache,"
+              echo "::error::re-publish, and retry the commit on a clean base."
+              exit 1
+            fi
+            echo "::warning::push rejected on attempt $attempt; retrying"
+            sleep 5
+          done
+          echo "::error::could not push the model commit after 3 attempts."
+          echo "::error::The weights are safe in the cache; re-run this stage."
+          exit 1
 
       # ---- advisory test gate -------------------------------------------
       # Runs *after* publishing so a flaky test can never throw away a chunk.

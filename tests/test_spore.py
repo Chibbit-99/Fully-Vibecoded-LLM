@@ -833,3 +833,45 @@ def test_a_finished_checkpoint_can_extend_to_a_longer_plan(tiny_setup, tmp_path)
     assert first.split()[1].split("/")[0] == "4", (
         f"expected to continue at step 4, got {first!r}"
     )
+
+
+def test_commit_step_rebases_instead_of_pushing_blind():
+    """The model commit must survive main advancing during a long training run.
+
+    Regression, hit twice: a run checks out main, trains for hours, commits,
+    then `git push` fails as non-fast-forward because another run finished or a
+    PR merged in the meantime. The failure lands *after* the expensive part, so
+    hours of training are stranded behind a green "publish succeeded".
+
+    Two things are required and neither is obvious:
+
+    * `fetch-depth: 0` on checkout -- the default shallow clone has no common
+      ancestor, so the rebase fails with "unrelated histories";
+    * fetch + rebase + retry before pushing, never a bare push and never a
+      force.
+    """
+    wf = yaml.safe_load((ROOT / ".github" / "workflows" / "train_spore.yml").read_text())
+    steps = wf["jobs"]["train"]["steps"]
+    by_name = {s.get("name"): s for s in steps if s.get("name")}
+
+    checkout = by_name["Checkout"]
+    depth = checkout.get("with", {}).get("fetch-depth")
+    assert depth in (0, "0"), (
+        f"checkout fetch-depth is {depth!r}; a shallow clone cannot rebase onto "
+        f"a main that moved during training"
+    )
+
+    commit = by_name["Commit trained model"]["run"]
+    assert "rebase origin/main" in commit, "the commit step must rebase onto main"
+    assert "for attempt in" in commit, "the push must be retried"
+    # check the actual push invocations, not prose: a comment saying
+    # "never force" must not trip this
+    import re  # noqa: PLC0415
+
+    pushes = re.findall(r"git push[^\n]*", commit)
+    assert pushes, "the commit step never pushes"
+    for cmd in pushes:
+        assert "--force" not in cmd and " -f" not in cmd, (
+            f"force-push to main is never acceptable: {cmd!r}"
+        )
+    assert "rebase --abort" in commit, "a conflicting rebase must abort cleanly"
