@@ -305,6 +305,19 @@ def tiny_setup(tmp_path_factory):
     prose = (ROOT / "data" / "tinyshakespeare.txt").read_text(encoding="utf-8")
     (data / "prose_train.txt").write_text(prose[:200_000], encoding="utf-8")
     (data / "prose_val.txt").write_text(prose[200_000:240_000], encoding="utf-8")
+    # a minimal qa.jsonl so stage=sft has something to tune on. Hand-written
+    # rather than derived, so the fixture stays independent of the real builder.
+    qa = [
+        {"user": "Who is the king?", "assistant": "The king is old.",
+         "context": "A king ruled the land.", "kind": "who-is", "topic": "king"},
+        {"user": "Where did they go?", "assistant": "They went to the castle.",
+         "context": "They walked north.", "kind": "where", "topic": "castle"},
+        {"user": "What happened next?", "assistant": "The castle burned.",
+         "context": "Night fell over the walls.", "kind": "summary", "topic": "castle"},
+    ] * 40
+    (data / "qa.jsonl").write_text(
+        "".join(json.dumps(r) + "\n" for r in qa), encoding="utf-8"
+    )
     cfg = tmp / "tiny.json"
     cfg.write_text(json.dumps({
         "name": "spore-test-128k", "vocab_size": 600, "block_size": 64,
@@ -594,16 +607,14 @@ def test_workflow_cache_key_covers_corpus_and_plan():
         assert field in restore["key"], f"{field} missing from the restore key"
         assert field in save["key"], f"{field} missing from the save key (restore would miss it)"
 
-    # a single line parses as a string, a multi-line block as a list
-    prefixes = restore.get("restore-keys", [])
-    if isinstance(prefixes, str):
-        prefixes = [prefixes]
-    for prefix in prefixes:
-        for field in ("data_hash", "target_tokens"):
-            assert field in prefix, (
-                f"restore-key {prefix!r} does not pin {field}: it can restore a "
-                f"checkpoint from a different corpus or step plan"
-            )
+    # restore-keys is now computed by the plan step (it must differ per stage),
+    # so assert the *scheme* rather than a literal string.
+    plan = by_name["Resolve plan (tokens -> steps)"]["run"]
+    assert "restore_keys" in plan, "plan step must emit the restore-keys output"
+    assert "steps.plan.outputs.restore_keys" in str(restore["restore-keys"]), (
+        "the restore step must consume the computed keys, or sft cannot reach the "
+        "pretrain checkpoint"
+    )
 
     # the fingerprint and the plan must be computed before the cache is read
     order = [s.get("name") for s in steps]
@@ -653,3 +664,97 @@ def test_sft_validation_is_disjoint_from_training():
         assert 0.05 <= share <= 0.15, (
             f"{kind}: {100*share:.1f}% held out ({held_kinds[kind]}/{n}), expected ~10%"
         )
+
+
+def test_sft_restore_keys_reach_the_pretrain_checkpoint():
+    """SFT must restore pretrain's weights, not start from a random init.
+
+    Regression: the cache key contains ``inputs.stage``, so pretrain writes
+    ``spore-ckpt-<model>-pretrain-<hash>-...`` and sft looked only for
+    ``spore-ckpt-<model>-sft-<hash>-...``.  Those never match, nothing else
+    staged the weights, and the first sft run initialised a fresh GPT and
+    chat-tuned *that* -- loss fell, the job went green, and the result was
+    unrelated to the pretrained model.
+
+    The fix is ordered restore-keys: sft's own chunks first (pinned to
+    tokens/epochs, so chunk 2 of a long sft resumes correctly), then the
+    pretrain checkpoint *unpinned* -- because sft targets 6M while pretrain
+    targeted 18M, so a pinned key could never match.  Leaving the last one
+    loose is safe exactly because the stage differs: the trainer sees
+    ckpt_stage != args.stage and starts stage 2 at step 0 from those weights,
+    so it cannot inherit a stale step count.
+
+    This pins the *scheme*; test_nested_resume_keeps_stage1_weights pins the
+    trainer behaviour that makes the loose key safe.
+    """
+    wf = yaml.safe_load((ROOT / ".github" / "workflows" / "train_spore.yml").read_text())
+    steps = wf["jobs"]["train"]["steps"]
+    plan = next(s for s in steps if s.get("name") == "Resolve plan (tokens -> steps)")
+    script = plan["run"]
+
+    # sft branches on stage and emits a pretrain-prefixed key without the
+    # token/epoch pins
+    sft_branch = script.split('if [ "$STAGE" = "sft" ]')[1].split("else")[0]
+    assert "-pretrain-" in sft_branch, (
+        "the sft restore-keys must include a pretrain key, or sft starts cold"
+    )
+    # and it must come AFTER sft's own pinned key, so a resumed chunk wins
+    assert sft_branch.index("-sft-") < sft_branch.index("-pretrain-"), (
+        "sft's own chunk must be preferred over the pretrain checkpoint"
+    )
+
+    # the cold-start guard: an sft run with no checkpoint must fail, not train
+    train = next(s for s in steps if s.get("name") == "Train chunk")["run"]
+    assert 'if [ "$STAGE" = "sft" ]' in train and "::error::" in train, (
+        "an sft run with no restored checkpoint must fail loudly"
+    )
+
+
+def test_nested_resume_keeps_stage1_weights(tiny_setup, tmp_path):
+    """Cross-stage resume must keep pretrained weights and reset the step count.
+
+    This is what makes the *loose* pretrain restore-key safe. An sft run that
+    restores a pretrain checkpoint must apply those weights, then start stage 2
+    at step 0 with a fresh schedule -- not inherit the pretrain step counter
+    (which would skip the entire sft schedule) and not discard the weights.
+
+    Without this, the earlier bug was invisible: a cold sft run also "works",
+    it just chat-tunes a randomly initialised model.
+    """
+    _, data = tiny_setup
+    out = tmp_path / "xstage"
+
+    def run(stage: str, steps: int) -> str:
+        r = subprocess.run(
+            [sys.executable, str(ROOT / "scripts" / "train_spore.py"),
+             "--config", str(ROOT / "configs" / "_test_tiny.json"),
+             "--out-dir", str(out), "--data-dir", str(data),
+             "--stage", stage, "--max-steps", str(steps),
+             "--batch-size", "2", "--threads", "1", "--log-interval", "1000",
+             "--eval-interval", str(steps), "--save-interval", "1000", "--smoke"],
+            capture_output=True, text=True, timeout=600,
+        )
+        assert r.returncode == 0, r.stderr[-800:]
+        return r.stdout
+
+    run("pretrain", 4)
+    ckpt_path = out / "last.pt"
+    assert ckpt_path.exists(), "pretrain must leave a resumable checkpoint"
+    before = torch.load(ckpt_path, map_location="cpu", weights_only=False)["model"]
+    snapshot = {k: v.clone() for k, v in before.items()}
+
+    log = run("sft", 2)
+    assert "[stage] stage-1 checkpoint is pretrain" in log, (
+        "sft did not recognise the pretrain checkpoint:\n" + log[-1200:]
+    )
+    assert "starting sft at step 0" in log, "sft must reset to its own step counter"
+    assert "[resume]" not in log, "sft must not resume the pretrain step count"
+
+    after = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+    assert after.get("stage") == "sft"
+    # weights were loaded and then updated by 2 sft steps -> different, but the
+    # shapes must match (proving the checkpoint's weights were applied at all)
+    assert set(after["model"]) == set(snapshot), "parameter set changed across stages"
+    assert any(not torch.equal(after["model"][k], snapshot[k]) for k in snapshot), (
+        "sft made no change to any weight"
+    )
