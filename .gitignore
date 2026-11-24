@@ -9,11 +9,15 @@ __pycache__/
 runs/
 *.pt
 
-# Generated corpora (data/spore/). Rebuilt in ~2 s from the committed raw text
-# by `python scripts/build_spore_data.py`; CI does this before training and
-# before deploying the demo. Keeping them out of git avoids 35 MB of derived
-# text that would drift from the builder.
-data/spore/
+# Generated corpora. Rebuilt in ~2 s from the committed raw text by
+# `python scripts/build_spore_data.py`; CI does this before training.
+# The 23 MB Q&A file and the prose dumps stay out of git, but the retrieval
+# factbook is committed: GitHub Pages serves this repository directly (native
+# branch publishing, no build step), so the browser demo can only fetch
+# /data/spore/factbook.json if the file is actually in the branch. Without it
+# the playground loads but cannot ground any answer.
+data/spore/*
+!data/spore/factbook.json
 
 # Editor / OS
 .DS_Store

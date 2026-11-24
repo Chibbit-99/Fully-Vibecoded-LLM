@@ -334,7 +334,7 @@ data/                 raw_wikitext2.txt, raw_tinystories.txt
   spore/              generated prose, qa.jsonl, factbook.json (gitignored)
 model/                trained artefacts (committed by CI)
   spore/<name>/       Spore checkpoints + meta + samples
-.github/workflows/    train_spore.yml, test.yml, pages.yml
+.github/workflows/    train_spore.yml, test.yml
 ```
 
 ## Going bigger
