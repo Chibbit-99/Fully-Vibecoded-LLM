@@ -150,7 +150,7 @@ def render_spore() -> str:
             f"| `{name}` | {human(params)} | {stage} "
             f"| {steps:,} | {val:.4f} | {human(meta.get('tokens_this_invocation'))} "
             f"| {human(meta.get('train_seconds'))}s "
-            f"| {'complete' if meta.get('finished') else 'in progress'} |"
+            f"| {'complete' if meta.get('finished') else 'preview (training)'} |"
             if params and steps and isinstance(val, (int, float))
             else f"| `{name}` | — | {stage} | — | — | — | — | — |"
         )

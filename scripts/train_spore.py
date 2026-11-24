@@ -122,7 +122,9 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     t.add_argument("--log-interval", type=int, default=25)
     t.add_argument("--save-interval", type=int, default=200)
     t.add_argument("--early-stop-patience", type=int, default=4,
-                   help="stop when val loss stops improving (0 = never); keeps best.pt")
+                   help="stop when val loss stops improving (0 = never); keeps best.pt. "
+                        "Ignored when --chunk-minutes is set: a stage split across "
+                        "jobs must not be terminated by one chunk's stall")
     t.add_argument("--threads", type=int, default=2)
     t.add_argument("--seed", type=int, default=1337)
     t.add_argument("--sft-repeat", type=int, default=2, help="epochs over the Q&A corpus")
@@ -151,8 +153,13 @@ def lr_at(step: int, warmup: int, total: int, base: float, floor: float) -> floa
 
 
 def save_checkpoint(path: Path, model, optimizer, config, step, best_val, history, rng,
-                    extra=None, stage: str = "pretrain") -> None:
-    """Atomic, fully resumable: weights, optimizer moments, RNG, step, history."""
+                    extra=None, stage: str = "pretrain", patience: int = 0) -> None:
+    """Atomic, fully resumable: weights, optimizer moments, RNG, step, history.
+
+    `patience` must round-trip too: training runs in chunks across separate
+    GitHub jobs, so a counter that resets to 0 on every resume re-arms early
+    stopping forever and the stage can never make progress.
+    """
     tmp = path.with_suffix(path.suffix + ".tmp")
     payload = {
         "model": model.state_dict(),
@@ -160,6 +167,7 @@ def save_checkpoint(path: Path, model, optimizer, config, step, best_val, histor
         "config": config.to_dict(),
         "step": step,
         "best_val": best_val,
+        "patience": patience,
         "history": history,
         "rng_numpy": rng.bit_generator.state,
         "rng_torch": torch.get_rng_state(),
@@ -500,6 +508,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         if same_stage:
             start_step = int(ckpt.get("step", 0))
             best_val = float(ckpt.get("best_val", best_val))
+            # Restore the stall counter as well, otherwise every fresh job
+            # starts with a full patience budget and can never accumulate
+            # enough non-improving evals to trigger a *real* early stop.
+            patience = int(ckpt.get("patience", 0))
             history = list(ckpt.get("history", []))
         else:
             print(f"[stage] stage-1 checkpoint is {ckpt_stage} "
@@ -559,15 +571,26 @@ def main(argv: Optional[List[str]] = None) -> int:
             else:
                 patience += 1
             save_checkpoint(out_dir / "best.pt", model, optimizer, config, step, best_val, history, rng_np,
-                            extra={"best_step": step}, stage=args.stage)
-            if args.early_stop_patience and patience >= args.early_stop_patience:
+                            extra={"best_step": step}, stage=args.stage, patience=patience)
+            # Early stopping is a *convergence* signal, but a chunked run stops
+            # for scheduling reasons: the process dies long before the cosine
+            # tail and the next job resumes at a different data position, so
+            # "no improvement in N evals" says nothing about the stage and
+            # would terminate it permanently (finished=True blocks all further
+            # resumes). Only early-stop when this job owns the whole schedule.
+            if (args.early_stop_patience and deadline is None
+                    and patience >= args.early_stop_patience):
                 print(f"[early-stop] no improvement for {patience} evals (best {best_val:.4f})", flush=True)
                 stop_reason = "early-stop"
                 break
+            if (args.early_stop_patience and deadline is not None
+                    and patience >= args.early_stop_patience):
+                print(f"[patience] {patience} evals without improvement (best {best_val:.4f}); "
+                      f"continuing — chunked runs do not early-stop", flush=True)
 
         if args.save_interval and step % args.save_interval == 0:
             save_checkpoint(out_dir / "last.pt", model, optimizer, config, step, best_val,
-                            history, rng_np, stage=args.stage)
+                            history, rng_np, stage=args.stage, patience=patience)
 
         if deadline is not None and time.time() >= deadline:
             stop_reason = "chunk"
@@ -579,10 +602,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     finished = step >= args.max_steps
     save_checkpoint(out_dir / "last.pt", model, optimizer, config, step, best_val, history,
                     rng_np, extra={"finished": finished, "stop_reason": stop_reason},
-                    stage=args.stage)
+                    stage=args.stage, patience=patience)
     save_checkpoint(out_dir / "model.pt", model, optimizer, config, step, best_val, history,
                     rng_np, extra={"finished": finished, "stop_reason": stop_reason},
-                    stage=args.stage)
+                    stage=args.stage, patience=patience)
 
     # ---- report ----------------------------------------------------------
     hist = [h for h in history if "val_loss" in h]
@@ -640,7 +663,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         path = export_checkpoint(model, config, tokenizer, out_dir / "weights.json")
         print(f"[export] {path} ({path.stat().st_size/1e6:.2f} MB)")
     elif args.export:
-        # pretraining exports too, so an unfinished stage can still be tried
+        # Pretraining exports too, so an unfinished stage can still be tried.
+        # This runs whenever --export is passed, including after a *chunk*
+        # stop: weights.json is what the server and the browser actually
+        # load, so a chunk that only lives in runs/ (or the Actions cache)
+        # would be invisible to the demo for hours.
         from tinyllm.numpy_engine import export_checkpoint
         path = export_checkpoint(model, config, tokenizer, out_dir / "weights.json")
         print(f"[export] {path} ({path.stat().st_size/1e6:.2f} MB)")

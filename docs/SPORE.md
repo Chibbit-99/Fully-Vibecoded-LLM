@@ -98,6 +98,42 @@ If you stop a run by any other means (a killed runner, a cancelled job), the
 last checkpoint is at most `--save-interval` steps old (200 by default, about
 5 minutes of work). Nothing restarts from zero.
 
+### A chunked run never early-stops the stage
+
+Early stopping exists to abandon a *converged* stage, but for a schedule split
+across several jobs it is actively harmful: each job ends long before the
+cosine tail, resumes at a different data position, and would see "no
+improvement in 4 evals" as a verdict on the whole stage. Because a stage that
+stops this way is marked `finished`, no later job could resume it — the stage
+would be dead after roughly 40 minutes of a planned 5 hours.
+
+So `--early-stop-patience` is only honoured when the job owns the complete
+schedule. When `--chunk-minutes` is set, a stall is logged as
+`[patience] ... continuing` and training proceeds to the step cap. The
+`patience` counter is also persisted in the checkpoint, so it accumulates
+across jobs rather than resetting to zero on every resume.
+
+Both properties are covered by tests that fail against the previous
+implementation:
+
+```
+tests/test_spore.py::test_chunked_run_never_early_stops_the_stage
+tests/test_spore.py::test_patience_survives_a_chunk_boundary
+```
+
+### Chunks publish a preview, not nothing
+
+The workflow passes `--export`, so **every** chunk writes `weights.json` — the
+file the server and the browser actually load. A chunk that stops for time is
+published as a *preview*: `meta.json` carries `"preview": true`, the README
+table says `preview (training)`, and the commit subject includes
+`(preview, step N/M)`. Once the stage reaches its step target the same paths
+are overwritten with the final artefacts and `preview` becomes `false`.
+
+This means the demo is usable for the whole run instead of only at the end.
+It also means a preview build is *weaker* than the final one — it is the
+checkpoint as of that chunk, not a converged model.
+
 ---
 
 ## 3. The data

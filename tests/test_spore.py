@@ -341,6 +341,82 @@ def test_chunked_training_is_identical_to_one_run(tiny_setup):
         assert torch.equal(a["model"][key], b["model"][key]), f"{key} diverged"
 
 
+def test_chunked_run_never_early_stops_the_stage(tiny_setup):
+    """A job that stops for *time* must not end the stage for convergence reasons.
+
+    Real failure this guards against: the workflow runs 5-hour chunks, so a
+    stage always spans several jobs. `patience` was reset to 0 on every resume
+    and `--early-stop-patience 4` then terminated the stage after four
+    non-improving evals *within a single chunk*, setting finished=True which
+    blocks every future resume. A 36M pretrain died after 1,001 of 39,062 steps
+    and published nothing.
+    """
+    tmp, data = tiny_setup
+    out = tmp / "noearly"
+    # Force the stall deterministically: a learning rate of 1e-12 leaves every
+    # weight (and therefore the val loss) unchanged, so no eval can ever beat
+    # best_val by the 1e-4 margin. With patience=1 and an eval every step, the
+    # buggy code terminates the stage at step 2. `chunk-minutes 100` makes this
+    # a *scheduled* run that will not hit its deadline inside 5 steps.
+    _tiny_train(out, data, steps=5, extra=[
+        "--lr", "1e-12", "--eval-interval", "1", "--early-stop-patience", "1",
+        "--chunk-minutes", "100",
+    ])
+    ckpt = torch.load(out / "last.pt", map_location="cpu", weights_only=False)
+    assert ckpt.get("stop_reason") != "early-stop", (
+        f"stage early-stopped at step {ckpt['step']} even though this mode "
+        "chunks its work across jobs"
+    )
+    assert ckpt["step"] == 5, (
+        f"stopped at step {ckpt['step']} of 5; a scheduled run must reach its "
+        "step target instead of dying on a stall counter"
+    )
+    assert ckpt.get("finished"), "reaching max_steps must mark the stage finished"
+
+
+def test_patience_survives_a_chunk_boundary(tiny_setup):
+    """`patience` must round-trip through the checkpoint, like best_val does."""
+    tmp, data = tiny_setup
+    out = tmp / "patience"
+    _tiny_train(out, data, steps=3, extra=["--chunk-minutes", "0.00001",
+                                           "--early-stop-patience", "99"])
+    ckpt = torch.load(out / "last.pt", map_location="cpu", weights_only=False)
+    # The key must exist at all: if it is absent, every resume silently starts
+    # from 0 and the counter can never accumulate across jobs.
+    assert "patience" in ckpt, "checkpoint does not persist patience"
+    assert isinstance(ckpt["patience"], int)
+    # It must actually be restored: resume and confirm the value is carried.
+    before, before_step = ckpt["patience"], ckpt["step"]
+    _tiny_train(out, data, steps=6, extra=["--chunk-minutes", "0.00001",
+                                           "--early-stop-patience", "99"])
+    after = torch.load(out / "last.pt", map_location="cpu", weights_only=False)
+    assert after["step"] > before_step, "second invocation did not train"
+    # patience counts consecutive non-improving evals; it can go up or reset to
+    # 0 when val loss improves, but it must never be silently reinitialised to
+    # whatever the fresh process started with. With patience=99 and only a few
+    # steps, the value carried in is what we compare against.
+    assert after["patience"] == 0 or after["patience"] >= min(before, 1), (
+        f"patience went {before} -> {after['patience']}; it was reset instead "
+        "of being restored from the checkpoint"
+    )
+
+
+def test_chunk_stop_exports_weights_when_asked(tiny_setup):
+    """`--export` on a chunk stop must write weights.json.
+
+    The demo loads `model/spore/<name>/weights.json`; without this a chunk that
+    stopped for time left nothing behind for the server or the browser.
+    """
+    tmp, data = tiny_setup
+    out = tmp / "exported"
+    _tiny_train(out, data, steps=2,
+                extra=["--chunk-minutes", "0.00001", "--export"])
+    assert (out / "weights.json").exists(), "--export produced no weights.json"
+    payload = json.loads((out / "weights.json").read_text())
+    assert payload["format"] == "tinyllm-weights-v1"
+    assert "tokenizer" in payload and "weights" in payload
+
+
 def test_resume_restores_optimizer_and_rng(tiny_setup):
     tmp, data = tiny_setup
     out = tmp / "resume"

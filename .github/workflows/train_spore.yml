@@ -192,6 +192,7 @@ jobs:
             --save-interval 200 \
             --eval-interval 100 \
             --early-stop-patience 4 \
+            --export \
             $RESUME
 
       - name: Training summary
@@ -238,30 +239,47 @@ jobs:
           MODEL="${{ inputs.model || 'spore-1-12M' }}"
           OUT="runs/$MODEL"
           DEST="model/spore/$MODEL"
-          OUT="$OUT" python - <<'PY' > /tmp/finished.txt
+          # Two things can be published:
+          #   * a finished stage (finished=True) — always wins, overwrites
+          #   * a chunk that stopped for time (finished=False) — published as a
+          #     *preview* so the demo is usable mid-training. weights.json
+          #     loads fine at any step; it just reads worse than the final one.
+          OUT="$OUT" python - <<'PY' > /tmp/state.txt
           import json, os, pathlib
           p = pathlib.Path(os.environ["OUT"]) / "train_log.json"
-          print(1 if p.exists() and json.loads(p.read_text())["meta"].get("finished") else 0)
+          if not p.exists():
+              print("missing")
+          else:
+              meta = json.loads(p.read_text())["meta"]
+              print("finished" if meta.get("finished") else "chunk")
           PY
-          FINISHED=$(cat /tmp/finished.txt)
-          if [ "$FINISHED" = "1" ] && [ -f "$OUT/weights.json" ]; then
+          STATE=$(cat /tmp/state.txt)
+          if [ "$STATE" = "missing" ]; then
+            echo "::notice::no train_log.json — nothing to publish"
+          elif [ ! -f "$OUT/weights.json" ]; then
+            echo "::notice::no exported weights.json — nothing to publish "
+            echo "          (train_spore.py exports on chunk stops only with --export)"
+          else
             mkdir -p "$DEST"
             for f in weights.json config.json tokenizer.json loss_curve.svg samples.txt train_log.json; do
               [ -f "$OUT/$f" ] && cp "$OUT/$f" "$DEST/$f"
             done
-          DEST="$DEST" OUT="$OUT" python - <<'PY'
+            DEST="$DEST" OUT="$OUT" STATE="$STATE" python - <<'PY'
           import json, os, pathlib
           src = pathlib.Path(os.environ["OUT"]) / "train_log.json"
           dest = pathlib.Path(os.environ["DEST"])
+          state = os.environ["STATE"]
           payload = json.loads(src.read_text())
           meta = payload["meta"]
           meta["history"] = payload["history"]
+          # Mark partial publishes so the UI and the README can say
+          # "training in progress" instead of implying the stage is done.
+          meta["preview"] = state == "chunk"
           (dest / "meta.json").write_text(json.dumps(meta, indent=2) + "\n")
-          print(f"published {dest}")
+          label = "published (PREVIEW — stage still training)" if meta["preview"] else "published"
+          print(f"{label}: {dest}")
           PY
-            du -h model/spore/$MODEL/* | sort -h
-          else
-            echo "::notice::stage not finished yet — nothing published (checkpoint stays in the cache)"
+            du -h "model/spore/$MODEL"/* | sort -h
           fi
           python scripts/update_readme.py || true
 
@@ -290,9 +308,11 @@ jobs:
       - name: Commit trained model
         run: |
           set -euo pipefail
-          # Nothing to publish when the stage is mid-flight (the checkpoint is
-          # in the cache, not in git) — exit before touching the index so a
-          # half-finished stage never produces an empty commit.
+          # Exit before touching the index unless the publish step actually
+          # produced weights, so a run with nothing trainable never makes an
+          # empty commit. A mid-stage *preview* publish does have weights.json,
+          # and is committed on purpose: it is what makes the demo work hours
+          # before the stage converges.
           MODEL_DIR="model/spore/${{ inputs.model || 'spore-1-12M' }}"
           if [ ! -f "$MODEL_DIR/weights.json" ]; then
             echo "::notice::no published weights for this stage yet — nothing to commit"
@@ -309,7 +329,10 @@ jobs:
             exit 0
           fi
           NAME=$(python -c "import json;print(json.load(open('$MODEL_DIR/meta.json')).get('model','spore'))" 2>/dev/null || echo spore)
-          git commit -m "spore: ${NAME} update [skip ci]"
+          # Signal partial publishes in the commit subject so `git log` on main
+          # never reads as though the stage had converged.
+          TAG=$(python -c "import json;m=json.load(open('$MODEL_DIR/meta.json'));print(' (preview, step %s/%s)' % (m.get('steps'),m.get('max_steps'))) if m.get('preview') else ''" 2>/dev/null || echo "")
+          git commit -m "spore: ${NAME} update${TAG} [skip ci]"
           git push
 
       # ---- advisory test gate -------------------------------------------
