@@ -48,7 +48,7 @@ compute available, and it is why the answers are grounded rather than invented.
 
 | Model | Params | Stage | Steps | Val loss | Tokens seen | Last run | State |
 |---|---|---|---|---|---|---|---|
-| `spore-1-12M` | 12.00M | pretrain | 4,394 | 2.2395 | 0 | 0s | complete |
+| `spore-1-12M` | 12.00M | sft | 952 | 0.7656 | 3.90M | 2.4ks | complete |
 
 <p align="center"><img src="model/spore/spore-1-12M/loss_curve.svg" alt="spore-1-12M training curve" width="620"></p>
 <!-- /SPORE_METRICS -->
