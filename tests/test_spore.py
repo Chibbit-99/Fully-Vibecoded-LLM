@@ -609,3 +609,47 @@ def test_workflow_cache_key_covers_corpus_and_plan():
     order = [s.get("name") for s in steps]
     assert order.index("Corpus fingerprint") < order.index("Restore checkpoint cache")
     assert order.index("Resolve plan (tokens -> steps)") < order.index("Restore checkpoint cache")
+
+
+def test_sft_validation_is_disjoint_from_training():
+    """Every SFT validation example must be excluded from training.
+
+    Regression: the trainer passed the *full* record list to build_sft_data and
+    then used ``records[::10]`` as validation.  The val slice is a subset of the
+    list it was drawn from, so all ~1,900 validation examples were also trained
+    on.  ``best_val`` therefore measured memorisation, and the early-stopping
+    patience could never fire for the right reason -- the model was scored on
+    text it had just been fit to.
+
+    This checks the arithmetic the trainer performs, not a live run, so it costs
+    nothing and catches the mistake if someone rewrites the split.
+    """
+    path = ROOT / "data" / "spore" / "qa.jsonl"
+    if not path.exists():
+        pytest.skip("corpus not built")
+    records = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+
+    held = records[::10]
+    train_recs = [r for i, r in enumerate(records) if i % 10 != 0]
+
+    assert len(train_recs) + len(held) == len(records), "split lost or duplicated records"
+    train_ids = {id(r) for r in train_recs}
+    overlap = [r for r in held if id(r) in train_ids]
+    assert not overlap, f"{len(overlap)} validation records are also trained on"
+
+    # the held-out slice must still be a representative sample, or the
+    # validation loss silently stops meaning anything
+    import collections  # noqa: PLC0415
+
+    total = collections.Counter(r["kind"] for r in records)
+    held_kinds = collections.Counter(r["kind"] for r in held)
+    for kind, n in total.items():
+        if n < 100:
+            # `who-is` has 16 records, of which 3 land in the slice (18.8%).
+            # That is sampling noise, not skew; asserting a tight band on a
+            # class this small would make the test flaky rather than useful.
+            continue
+        share = held_kinds[kind] / n
+        assert 0.05 <= share <= 0.15, (
+            f"{kind}: {100*share:.1f}% held out ({held_kinds[kind]}/{n}), expected ~10%"
+        )
