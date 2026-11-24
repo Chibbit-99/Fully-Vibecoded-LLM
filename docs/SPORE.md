@@ -70,6 +70,14 @@ The defaults are 18M/6M rather than round token counts so that the epochs stay
 sane: 18M is ~3 passes over the 5.77M-token corpus, where a fixed 40M was ~7
 (it used to be 16 before the `<unk>` recovery roughly doubled the corpus).
 
+### Can two runs share `main`?
+
+Yes, for **different** models. The commit step fetches, rebases onto `main`, and
+retries, so a run that finishes while another is still training lands in front of
+it rather than being rejected as non-fast-forward. Two stages of the *same* model
+are still serialised by the workflow's `concurrency` group, which is the correct
+behaviour: they share one checkpoint.
+
 **Do not tick "start from scratch" on an `sft` row.** It discards the cache,
 so the pretrain weights are not restored; the job now fails with an explicit
 error rather than chat-tuning a randomly initialised model, which is what used
