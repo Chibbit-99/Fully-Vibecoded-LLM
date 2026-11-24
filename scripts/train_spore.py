@@ -620,12 +620,23 @@ def main(argv: Optional[List[str]] = None) -> int:
         ckpt_stage = ckpt.get("stage") or (
             "pretrain" if ckpt.get("stage1", True) else "sft"
         )
-        same_stage = ckpt_stage == args.stage and not ckpt_finished
-        if same_stage and "optimizer" in ckpt:
-            try:
-                optimizer.load_state_dict(ckpt["optimizer"])
-            except (ValueError, KeyError) as exc:
-                print(f"[resume] optimizer not restored ({exc})")
+        # Three cases, not two.  A *finished* checkpoint of the SAME stage is
+        # not the same thing as a checkpoint from a *different* stage:
+        #
+        #   unfinished, same stage   -> resume at its step, restore optimizer
+        #   finished,   same stage   -> nothing left to do; `start_step` must
+        #                               survive so the [done] guard below can
+        #                               see it.  If the plan asks for MORE than
+        #                               the checkpoint has, continue from it.
+        #   different stage          -> stage 2 starts at step 0 from the weights
+        #
+        # The old code was `same_stage = ckpt_stage == args.stage and not
+        # ckpt_finished`, which collapsed cases 1 and 2.  Re-dispatching a
+        # completed stage therefore reset start_step to 0 and retrained from
+        # the top -- while still loading the weights, so the log looked like a
+        # genuine resume.  It also made the [done] guard unreachable for
+        # exactly the situation it was written for.
+        same_stage = ckpt_stage == args.stage
         if same_stage:
             start_step = int(ckpt.get("step", 0))
             best_val = float(ckpt.get("best_val", best_val))
@@ -634,6 +645,23 @@ def main(argv: Optional[List[str]] = None) -> int:
             # enough non-improving evals to trigger a *real* early stop.
             patience = int(ckpt.get("patience", 0))
             history = list(ckpt.get("history", []))
+            if ckpt_finished and start_step >= args.max_steps:
+                print(f"[resume] {resume_path} -> stage {args.stage} already "
+                      f"finished at step {start_step}/{args.max_steps}; "
+                      f"nothing to train")
+            else:
+                if ckpt_finished:
+                    # finished, but this plan wants more steps: keep the
+                    # weights and step, drop the stale AdamW moments (they were
+                    # annealed to a much lower LR) and start a fresh budget.
+                    print(f"[resume] {resume_path} -> step {start_step}/"
+                          f"{args.max_steps} was finished at a shorter plan; "
+                          f"continuing with a fresh optimizer")
+                if "optimizer" in ckpt and not ckpt_finished:
+                    try:
+                        optimizer.load_state_dict(ckpt["optimizer"])
+                    except (ValueError, KeyError) as exc:
+                        print(f"[resume] optimizer not restored ({exc})")
         else:
             print(f"[stage] stage-1 checkpoint is {ckpt_stage} "
                   f"(finished={ckpt_finished}); starting {args.stage} at step 0 "
@@ -652,7 +680,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                   f"best_val={best_val:.4f}")
 
     if start_step >= args.max_steps:
-        print(f"[done] already at step {start_step} of {args.max_steps} — nothing to do")
+        print(f"[done] already at step {start_step} of {args.max_steps} — nothing "
+              f"to train; re-exporting so the model can be published")
     model.train()
     t0 = time.time()
     running, running_n = 0.0, 0
