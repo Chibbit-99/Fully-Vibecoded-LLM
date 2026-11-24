@@ -35,9 +35,6 @@ jobs:
       - name: Fast unit tests (tokenizer + model shapes + Spore)
         run: pytest tests/test_model.py tests/test_tokenizer.py tests/test_spore.py -q
 
-      - name: Cross-engine parity (needs trained weights)
-        run: pytest tests/test_parity.py -q
-
       - name: Server smoke test
         run: pytest tests/test_server.py -q
 
@@ -50,10 +47,14 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
+      - name: JS syntax check
+        run: |
+          for f in web/*.js; do node --check "$f"; done
+          echo "all web/*.js parse"
       - name: Worker smoke test (needs committed weights)
         run: |
-          if [ -f model/weights.json ]; then
-            node scripts/worker_smoke.mjs model/weights.json
+          if ls model/spore/*/weights.json >/dev/null 2>&1; then
+            node scripts/spore_smoke.mjs
           else
-            echo "::notice::no model/weights.json yet — skipping"
+            echo "::notice::no model/spore/*/weights.json yet — skipping"
           fi

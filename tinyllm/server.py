@@ -3,14 +3,15 @@
 Two engines are available:
 
 * ``numpy`` (default) -- pure NumPy, no PyTorch needed. Uses the exported
-  ``model/weights.json`` (float16) and a KV cache.
+  ``model/spore/<name>/weights.json`` (float16) and a KV cache.
 * ``torch`` -- the original checkpoint, if PyTorch is installed.
 
 Run it:
 
     uvicorn tinyllm.server:app --host 0.0.0.0 --port 8000
     # or
-    python -m tinyllm.server --checkpoint model/weights.json --port 8000
+    python -m tinyllm.server --port 8000                    # auto-picks a
+    python -m tinyllm.server --checkpoint spore-1-12M --port 8000
 
 Then:
 
@@ -52,12 +53,42 @@ from .sft import ASSISTANT, END, render_history, render_prompt
 from .tokenizer import ByteBPE
 
 ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_CHECKPOINT = ROOT / "model" / "weights.json"
-
-DEFAULT_SYSTEM_PROMPT = "You are Spore, a small language model trained from scratch."
-# Spore chat models live beside the original checkpoint.
 SPORE_DIR = ROOT / "model" / "spore"
 FACTBOOK = ROOT / "data" / "spore" / "factbook.json"
+
+
+def _default_checkpoint() -> Path:
+    """Prefer a published Spore model; fall back to a legacy model/weights.json.
+
+    Spore is the only model family in this repo, but the fallback keeps older
+    checkouts (and any user checkpoint passed via --checkpoint) working.
+    """
+    published = sorted(SPORE_DIR.glob("*/weights.json"))
+    # smallest first: the 12M loads fastest and is the sensible default
+    if published:
+        return min(published, key=lambda p: p.stat().st_size)
+    return ROOT / "model" / "weights.json"
+
+
+DEFAULT_CHECKPOINT = _default_checkpoint()
+
+DEFAULT_SYSTEM_PROMPT = "You are Spore, a small language model trained from scratch."
+
+
+def _count_params(model) -> int:
+    """Unique parameter count, without double-counting tied weights.
+
+    `lm_head.weight` is an alias of `wte` when weights are tied, so summing
+    every array in the dict overcounts by one embedding matrix.
+    """
+    seen, total = set(), 0
+    for arr in model.w.values():
+        ident = arr.__array_interface__["data"][0]
+        if ident in seen:
+            continue
+        seen.add(ident)
+        total += int(arr.size)
+    return total
 
 
 def _strip_turn(text: str) -> str:
@@ -107,7 +138,9 @@ class TinyEngine:
             "checkpoint": str(self.checkpoint),
             "config": self.config.to_dict(),
             "vocab_size": self.tokenizer.vocab_size,
-            "parameters": self.meta.get("params"),
+            # Count from the weights when meta.json is absent (a chunk that
+            # exported but has not been published yet has no meta.json).
+            "parameters": self.meta.get("params") or _count_params(self.model),
             "val_loss": self.meta.get("best_val_loss") or self.meta.get("val_loss"),
             "trained_steps": self.meta.get("steps"),
             "trained_tokens": self.meta.get("tokens_seen"),
@@ -308,7 +341,7 @@ if HAVE_FASTAPI:
 
         @app.get("/api/generate")
         def generate_get(
-            prompt: str = "ROMEO:",
+            prompt: str = "What is water?",
             max_tokens: int = 80,
             temperature: float = 0.8,
             top_k: int = 40,
@@ -343,13 +376,8 @@ if HAVE_FASTAPI:
 
             @app.get("/")
             def index() -> FileResponse:
-                # Spore is the flagship model; the Shakespeare page stays at
-                # /index.html and /shakespeare.html
-                spore_page = web_dir / "spore.html"
-                return FileResponse(spore_page if spore_page.exists() else web_dir / "index.html")
-
-            @app.get("/shakespeare.html")
-            def shakespeare() -> FileResponse:
+                # web/ *is* the Spore playground: index.html plus the JS that
+                # loads model/spore/<name>/ directly.
                 return FileResponse(web_dir / "index.html")
 
             @app.get("/{path:path}")

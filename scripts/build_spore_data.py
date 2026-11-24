@@ -775,7 +775,7 @@ def build(args: argparse.Namespace) -> int:
     }
     (out_dir / "qa_stats.json").write_text(json.dumps(stats, indent=2) + "\n", encoding="utf-8")
 
-    # content hash: train.yml folds this into the cache fingerprint so a data
+    # content hash: train_spore.yml folds this into the cache fingerprint so a data
     # change invalidates a cached checkpoint instead of resuming onto it
     h = hashlib.sha256()
     for name in ("prose_train.txt", "qa.jsonl"):

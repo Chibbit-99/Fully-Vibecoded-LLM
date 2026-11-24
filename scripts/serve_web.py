@@ -4,7 +4,8 @@
     python scripts/serve_web.py            # http://localhost:8080
     python scripts/serve_web.py --port 3000
 
-Serves the repository root so the page can fetch ``model/weights.json``.
+Serves the repository root so the page can fetch ``model/spore/`` weights
+and ``data/spore/factbook.json``.
 """
 
 from __future__ import annotations

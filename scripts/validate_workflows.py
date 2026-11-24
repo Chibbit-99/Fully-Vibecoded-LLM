@@ -7,7 +7,7 @@ Checks that are cheap to get right here and expensive to debug in CI:
 * every job has `runs-on` and at least one step
 * every `uses:` is pinned to a tag or SHA (not a branch)
 * no unknown top-level keys
-* training defaults referenced in the workflow exist as train.py flags
+* training defaults referenced in the workflow exist as train_spore.py flags
 * shell blocks do not reference undefined `${{ }}` inputs without a fallback
 
     python scripts/validate_workflows.py
@@ -78,21 +78,30 @@ def validate_file(path: Path, train_flags: set[str]) -> list[str]:
         if declared and name_ not in declared:
             problems.append(f"{path.name}: uses undeclared input {name_!r}")
 
-    # train.py flags referenced in run blocks must exist
-    for match in re.finditer(r"scripts/train\.py([^\n`]*)", text):
+    # Flags passed to the trainer in a run block must exist in its --help.
+    for match in re.finditer(r"scripts/train_spore\.py([^\n`]*)", text):
         for flag in re.findall(r"(--[a-z0-9-]+)", match.group(1)):
             if flag not in train_flags:
-                problems.append(f"{path.name}: unknown train.py flag {flag}")
+                problems.append(f"{path.name}: unknown train_spore.py flag {flag}")
 
     return problems
 
 
 def train_flags() -> set[str]:
+    """Every flag `scripts/train_spore.py --help` advertises.
+
+    If this ever returns an empty set the check silently passes everything, so
+    fail loudly instead of pretending the workflows were validated.
+    """
     out = subprocess.run(
-        [sys.executable, str(ROOT / "scripts" / "train.py"), "--help"],
+        [sys.executable, str(ROOT / "scripts" / "train_spore.py"), "--help"],
         capture_output=True, text=True, cwd=ROOT,
     )
-    return set(re.findall(r"(--[a-z0-9-]+)", out.stdout))
+    flags = set(re.findall(r"(--[a-z0-9-]+)", out.stdout))
+    if not flags:
+        print("::error::could not read train_spore.py --help", file=sys.stderr)
+        raise SystemExit(1)
+    return flags
 
 
 def main() -> int:
@@ -109,7 +118,7 @@ def main() -> int:
             print(f"  FAIL  {p}")
         all_problems.extend(problems)
         if not problems:
-            print("  PASS  structure, pinned actions, inputs, train.py flags")
+            print("  PASS  structure, pinned actions, inputs, train_spore.py flags")
     print()
     if all_problems:
         print(f"{len(all_problems)} problem(s) found")

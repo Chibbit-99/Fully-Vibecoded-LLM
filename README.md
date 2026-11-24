@@ -4,7 +4,7 @@
 
 **A GPT-style language model, written from scratch by an AI agent — trained for free on GitHub Actions, served by NumPy, and running in your browser with zero dependencies.**
 
-[![Train TinyLLM](https://github.com/Chibbit-99/Fully-Vibecoded-LLM/actions/workflows/train.yml/badge.svg)](https://github.com/Chibbit-99/Fully-Vibecoded-LLM/actions/workflows/train.yml)
+[![Train Spore](https://github.com/Chibbit-99/Fully-Vibecoded-LLM/actions/workflows/train_spore.yml/badge.svg)](https://github.com/Chibbit-99/Fully-Vibecoded-LLM/actions/workflows/train_spore.yml)
 [![Tests](https://github.com/Chibbit-99/Fully-Vibecoded-LLM/actions/workflows/test.yml/badge.svg)](https://github.com/Chibbit-99/Fully-Vibecoded-LLM/actions/workflows/test.yml)
 [![Live demo](https://img.shields.io/badge/demo-GitHub%20Pages-7aa2ff)](https://chibbit-99.github.io/Fully-Vibecoded-LLM/)
 
@@ -14,65 +14,36 @@
 
 ## What this is
 
-An experiment: **can an AI agent alone design, train and ship a language model?** This repository is the result. It is a complete, working LLM stack with no pretrained weights and no model zoos — every component is implemented from first principles:
+An experiment: **can an AI agent alone design, train and ship a language model?**
+This repository is the result. It is a complete, working LLM stack with no
+pretrained weights and no model zoos — every component is implemented from
+first principles:
 
 | Component | File | What it does |
 |---|---|---|
-| **Byte-level BPE tokenizer** | `tinyllm/tokenizer.py` | Trained from scratch on the corpus (no tiktoken, no HF tokenizers). Lossless on arbitrary UTF-8. |
+| **Byte-level BPE tokenizer** | `tinyllm/tokenizer.py` | Trained from scratch on the corpus (no tiktoken, no HF tokenizers). Lossless on arbitrary UTF-8, with control tokens the tokenizer can never produce by accident. |
 | **Transformer** | `tinyllm/model.py` | Decoder-only GPT: causal self-attention, pre-LayerNorm, GELU-tanh MLP, weight-tied embeddings. No `transformers` dependency. |
-| **Training loop** | `scripts/train.py` | AdamW, warmup + cosine decay, grad accumulation, KV-cached sampling, resumable checkpoints. Runs on **CPU**. |
-| **Training infrastructure** | `.github/workflows/train.yml` | GitHub Actions trains it, caches checkpoints, runs the test suite, commits the artefacts back. |
+| **Training loop** | `scripts/train_spore.py` | Two stages (pretrain → chat tuning), AdamW, warmup + cosine decay, SFT loss masking, resumable checkpoints that survive a job being killed. Runs on **CPU**. |
+| **Training infrastructure** | `.github/workflows/train_spore.yml` | GitHub Actions trains it in time-boxed chunks, caches checkpoints, publishes, and commits the artefacts back. |
+| **Retrieval** | `tinyllm/retrieval.py`, `web/retrieval.js` | BM25 grounding, implemented twice (Python + JS) and tested to rank identically. This is what lets a 12M model answer factually. |
 | **NumPy inference** | `tinyllm/numpy_engine.py` | Pure NumPy forward pass with an incremental KV cache. Bit-identical to PyTorch at fp32. |
-| **HTTP server** | `tinyllm/server.py` | FastAPI with `/api/generate`, `/api/tokenize`, `/api/health` and streaming-friendly JSON. |
+| **HTTP server** | `tinyllm/server.py` | FastAPI with `/api/generate`, `/api/tokenize`, `/api/models`, `/api/model`, `/api/health`. |
 | **Browser engine** | `web/engine.js` | The same forward pass in vanilla JavaScript, in a Web Worker. No WASM, no GPU, no CDN. |
-| **Demo** | `web/index.html` | Type a prompt, watch tokens stream in. Deployed automatically to GitHub Pages. |
+| **The playground** | `web/` | The Spore chat UI. Fetches weights straight from `model/spore/`; every token is generated on your machine. Deployed to GitHub Pages. |
 
-**The model:** TinyGPT — **3.54M parameters**, 4 layers, 4 heads, d_model 256, context window 192 tokens, 1280-token BPE vocabulary, trained on [Tiny Shakespeare](https://github.com/karpathy/char-rnn) (public domain, ~1.1 MB). Exact metrics are generated below by the training workflow.
+**The model:** **Spore** — 12M and 36M parameter chat models (exact counts,
+asserted in tests), 6–12 layers, context 512, trained in two stages on
+Wikipedia + TinyStories and then chat-tuned on 18k extractive Q&A records.
 
-It does not know any facts. It writes Shakespeare-flavoured English at a character level. That is exactly the point for an experiment about *building the machinery*, not about beating benchmarks.
+A model this small cannot *store* facts, so it does not try: it retrieves a
+relevant passage (BM25) and answers from it. That is the honest design for the
+compute available, and it is why the answers are grounded rather than invented.
 
-> **New: [Spore](#spore--models-that-answer-questions) — 12M and 36M chat models** trained on Wikipedia + TinyStories that can answer questions. Same from-scratch stack, two stages (pretrain → chat tuning), resumable across GitHub Actions jobs. [Jump to it ↓](#spore--models-that-answer-questions)
-
-<!-- TRAINING_METRICS -->
 ## Training results
 
-> Generated by `scripts/update_readme.py` from `model/meta.json` — the numbers below
-> describe the exact weights committed in `model/weights.json`.
-
-| Metric | Value |
-|---|---|
-| Parameters | **2.05M** (2,050,176) |
-| Architecture | 4 layers · 4 heads · d_model 192 · context 128 |
-| Vocabulary | 1280 byte-BPE tokens |
-| Optimiser steps | **500** |
-| Tokens seen | 4.10M (4,096,000) |
-| Validation loss | **3.0766** nats/token |
-| Bits per byte | **2.307** (8.0 = random bytes) |
-| Training time | 6 min on CPU 11,872 tok/s |
-| Loss trajectory | 3.983 → 3.065 |
-
-<p align="center"><img src="model/loss_curve.svg" alt="training and validation loss" width="680"></p>
-<p align="center"><sub>train loss in blue, validation loss in green — rendered by scripts/train.py</sub></p>
-
-<details>
-<summary><b>Sample generation</b> (from the committed weights)</summary>
-
-```
-ROMEO:
-It see I will did I am conce
-And see this doose dish thee have to give thee.
-
-LADY CAPULET:
-This most brother's lord, my lord, gentle good heart;
-I do not not devil thou hear this good mother
-Signonly my soul so should have I did for
-Sainted I did I and see me his I,
-And thou did art am thou thou did dost Warwick thou lovest I art say, am hastewastings,
-To unin thou God him thou I thou hast thou art thou thou 
-```
-
-</details>
-<!-- /TRAINING_METRICS -->
+<!-- SPORE_METRICS -->
+_No Spore checkpoint has been trained yet. Run the **Train Spore (12M / 36M)** workflow — see [docs/SPORE.md](docs/SPORE.md)._
+<!-- /SPORE_METRICS -->
 
 ---
 
@@ -91,13 +62,16 @@ python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 1 · The browser demo (no server logic, no GPU)
+### 1 · The browser playground (no server, no GPU)
 
 ```bash
-python scripts/serve_web.py          # then open http://localhost:8080/web/
+python scripts/build_spore_data.py   # ~2 s: builds the retrieval factbook
+python scripts/serve_web.py          # then open http://localhost:8080/
 ```
 
-The weights (`model/weights.json`, ~9 MB — float16 buffers base64-encoded) are fetched once, then **every token is generated on your machine** in a Web Worker. No inference API is involved.
+`web/` is the whole site. The page fetches `model/spore/<name>/weights.json`
+and `data/spore/factbook.json` once, then **every token is generated on your
+machine** in a Web Worker. No inference API, no API key.
 
 ### 2 · The Python inference server
 
@@ -106,144 +80,156 @@ python -m tinyllm.server --port 8000
 ```
 
 ```bash
+# a chat turn is a prompt in the format the model was tuned on
 curl -s localhost:8000/api/generate -H 'content-type: application/json' \
-  -d '{"prompt": "ROMEO:", "max_tokens": 120, "temperature": 0.8, "top_k": 40, "top_p": 0.95}'
+  -d '{"prompt": "<|user|>Who is Michael Jordan?", "max_tokens": 60}'
 ```
 
 ```json
 {
-  "prompt": "ROMEO:",
-  "completion": "What is the matter?\n\nBENVOLIO:\nBut soft, what light...",
-  "text": "ROMEO:What is the matter?...",
-  "tokens_generated": 120,
-  "finish_reason": "length",
-  "usage": {"prompt_tokens": 3, "completion_tokens": 120},
-  "timings": {"total_ms": 4210.5, "tokens_per_second": 28.5},
+  "prompt": "<|user|>Who is Michael Jordan?",
+  "completion": " American former basketball player...",
+  "grounding": "Michael Jeffrey Jordan (born February 17, 1963) ...",
+  "retrieved": {"title": "Michael Jordan", "score": 8.41},
+  "tokens_generated": 60,
+  "usage": {"prompt_tokens": 612, "completion_tokens": 60},
+  "timings": {"tokens_per_second": 36.7},
   "engine": "numpy"
 }
 ```
 
-The server needs **no PyTorch** — just `numpy` and `fastapi`. It also serves the demo at `/` so one process gives you both.
+The server retrieves a passage for the prompt automatically and returns it as
+`grounding`, so you can see exactly what the answer was copied from.
+
+The server needs **no PyTorch** — just `numpy` and `fastapi`. It also serves the
+same playground at `/`, so one process gives you both.
 
 | Endpoint | Method | Purpose |
 |---|---|---|
-| `/api/generate` | `POST` / `GET` | Complete a prompt. Body: `prompt`, `max_tokens`, `temperature`, `top_k`, `top_p`, `seed`, `stop`, `system_prompt`. |
+| `/api/generate` | `POST` / `GET` | Complete a prompt. Body: `prompt`, `max_tokens`, `temperature`, `top_k`, `top_p`, `seed`, `stop`. Retrieves grounding for chat prompts and returns it. |
 | `/api/tokenize` | `POST` | Show the BPE tokenization, including per-token pieces. |
+| `/api/models` | `GET` | Every published checkpoint under `model/spore/`. |
 | `/api/health` | `GET` | Liveness + model metadata. |
 | `/api/model` | `GET` | Hyper-parameters, parameter count, validation metrics. |
 
 ### 3 · The CLI
 
 ```bash
-python -m tinyllm generate "HAMLET:" -n 200 -t 0.9
-python -m tinyllm chat      # interactive
 python -m tinyllm info      # parameters, config, training metrics
+python -m tinyllm chat      # interactive
 python -m tinyllm tokenize "To be, or not to be"
 ```
 
 ---
 
-## Spore — models that answer questions
+## Spore — how it answers questions
 
-TinyGPT continues Shakespeare. **Spore answers questions.** It is the same
-from-scratch stack with three additions: a bigger and more varied corpus, a
-chat-tuning stage, and retrieval so a small model can ground its answers in
-evidence instead of inventing them.
+A 12M-parameter model cannot memorise Wikipedia. Pretending otherwise produces
+a model that confidently invents things. Spore does the opposite:
 
-| model | parameters | layers | width | context | vocab | weights |
+1. **Retrieve.** BM25 ranks the ~7,000 factbook passages against your question.
+2. **Ground.** The best passage is prepended as `<|context|>`.
+3. **Answer.** The model copies the answer out of that passage and stops at
+   `<|end|>`.
+
+That is a real, honest architecture for this compute budget — and it is why the
+retrieval implementation exists twice, in `tinyllm/retrieval.py` and
+`web/retrieval.js`, with a test asserting both rank identically.
+
+| Model | Parameters | Layers | Width | Context | Vocab | Weights |
 |---|---|---|---|---|---|---|
 | `spore-1-12M` | **12,000,000** | 6 | 384 | 512 | 3010 | ~24 MB |
 | `spore-1-36M` | **36,000,000** | 12 | 480 | 512 | 5210 | ~72 MB |
 
-The number in each name is the exact parameter count — `tests/test_spore.py`
-asserts it against the analytic formula *and* against PyTorch.
+The number in each name is the exact parameter count, asserted against both the
+analytic formula and PyTorch in `tests/test_spore.py`.
 
-**Data.** `scripts/build_spore_data.py` turns two committed public-domain
-corpora (WikiText-2, 10.8 MB of real Wikipedia; TinyStories, 5.2 MB of simple
-prose) into a 5.5 MB pretraining text, 18k extractive Q&A records and a 7k-passage
-retrieval factbook. No network access is needed to rebuild any of it.
+**Data** (committed as raw text, no network needed at train time):
 
-**Two stages.** Pretraining on prose, then supervised chat tuning where the loss
-is masked to the assistant's tokens only — the model is never trained to predict
-the question. Turns are delimited by control tokens the BPE can never produce by
-accident: `<|user|> … <|context|> … <|assistant|> … <|end|>`.
+| Source | Size | Role |
+|---|---|---|
+| WikiText-2 | 10.8 MB | Real Wikipedia prose — encyclopedic register |
+| TinyStories | 5.2 MB | Simple narrative English — fluent short sentences |
+| Generated Q&A | 18,286 records | Extractive, context-grounded chat tuning |
 
-**Retrieval, because 12M parameters cannot store the world.** At inference the
-server (and the browser) look up the best-matching passage with BM25, prepend it
-as a `<|context|>` block, and the model answers from it. `tinyllm/retrieval.py`
-and `web/retrieval.js` are ports of the same ranker and are tested to return
-identical results.
+**The two stages:**
 
-**Resumable, because it takes longer than six hours.** Every GitHub Actions job
-is capped at 6 h, so training stops cleanly at `chunk_minutes`, saves weights +
-optimiser moments + RNG state, and the next run continues from that exact step.
-Four resuming chunks produce *bit-identical* weights to one uninterrupted run
-(`test_chunked_training_is_identical_to_one_run`).
+| Stage | Trains on | Loss masking | Purpose |
+|---|---|---|---|
+| 1 · pretrain | prose | next-token everywhere | learn English |
+| 2 · sft | Q&A | **assistant tokens only** | learn to answer, not to imitate questions |
 
-```bash
-# rebuild the corpus (~2 s, no network)
-python scripts/build_spore_data.py
+Stage 2 keeps stage 1's weights but starts its own step counter and LR schedule.
+Masking matters: without it the model learns to generate the *question* too, and
+35% of the records were unlearnable before the context/answer bug was fixed —
+both are documented in `docs/SPORE.md`.
 
-# train one chunk of stage 1, then stage 2 (usually driven by Actions)
-python scripts/train_spore.py --config configs/spore_12m.json \
-    --out-dir runs/spore-1-12M --stage pretrain --token-budget 40e6 --chunk-minutes 300
-python scripts/train_spore.py --config configs/spore_12m.json \
-    --out-dir runs/spore-1-12M --stage sft      --token-budget 12e6 --chunk-minutes 300
+**Resumable across jobs.** GitHub kills a job at 6 h, so training is split into
+chunks. A checkpoint carries weights, AdamW moments, NumPy/Torch RNG state, the
+step counter, the loss history, the best val loss **and** the early-stop counter.
+Four resuming chunks produce bit-identical weights to one uninterrupted run —
+that is `test_chunked_training_is_identical_to_one_run`, not a claim.
 
-# serve it (the browser demo is at /, options at /spore.html)
-python -m tinyllm.server --checkpoint spore-1-12M --port 8000
-```
+---
 
-**Which workflow to run:** `Train Spore (12M / 36M)` in Actions, inputs
-`model=spore-1-12M` / `stage=pretrain`, then the same with `stage=sft`, then the
-36M model. Repeat a stage until the job summary says *FINISHED*; each re-run
-continues where the previous chunk stopped. The full guide, including measured
-throughput and memory, is in **[docs/SPORE.md](docs/SPORE.md)**.
-
-<!-- SPORE_METRICS -->
-_No Spore checkpoint has been trained yet. Run the **Train Spore (12M / 36M)** workflow — see [docs/SPORE.md](docs/SPORE.md).
-<!-- /SPORE_METRICS -->
 
 ## Training it yourself
 
 ### On GitHub Actions (recommended — free, and the point of the repo)
 
-**Actions → Train TinyLLM → Run workflow.** Inputs let you set the step count, batch size, seed and a time budget. The job:
+**Actions → Train Spore (12M / 36M) → Run workflow.** Four runs, in order:
 
-1. restores the checkpoint cache (so re-runs *resume* instead of restarting),
-2. trains on CPU with the committed tokenizer,
-3. runs the full test suite including cross-engine parity,
-4. exports `model/weights.json` (+ config, metadata, loss curve, samples),
-5. commits `model/` back to the branch — which triggers the Pages deployment.
+| # | `model` | `stage` | `chunk_minutes` | `target_tokens` |
+|---|---|---|---|---|
+| 1 | `spore-1-12M` | `pretrain` | `300` | *(blank → 40M)* |
+| 2 | `spore-1-12M` | `sft` | `300` | *(blank → 12M)* |
+| 3 | `spore-1-36M` | `pretrain` | `300` | *(blank → 40M)* |
+| 4 | `spore-1-36M` | `sft` | `300` | *(blank → 12M)* |
 
-A full 2 400-step run takes roughly 40–60 minutes on a 2-core `ubuntu-latest` runner. Change the inputs to train longer.
+Re-run any row until its job summary says **Stage FINISHED** — each job stops
+cleanly at `chunk_minutes` (GitHub kills jobs at 6 h) and the next run resumes
+from the exact step. Row 2 finishing is enough for the live demo.
+
+Every run that has a checkpoint publishes one: a mid-stage chunk is committed as
+a **preview** (`"preview": true` in `meta.json`, `preview (training)` in the
+table below), and a finished stage overwrites it.
+
+Full reference: **[docs/SPORE.md](docs/SPORE.md)**.
 
 ### Locally
 
 ```bash
-python scripts/train.py --out-dir runs/main --config configs/small.json --max-steps 2400
+python scripts/build_spore_data.py                      # corpus (~2 s, no network)
+
+# stage 1: prose
+python scripts/train_spore.py --config configs/spore_12m.json \
+    --out-dir runs/spore-1-12M --stage pretrain --token-budget 40e6
+
+# stage 2: chat tuning (picks up stage 1's weights automatically)
+python scripts/train_spore.py --config configs/spore_12m.json \
+    --out-dir runs/spore-1-12M --stage sft --token-budget 12e6
 ```
 
 | Flag | Default | Notes |
 |---|---|---|
-| `--config` | – | JSON file with model shape (see `configs/`). |
-| `--max-steps` | 2400 | Optimiser steps. |
-| `--batch-size` | 32 | Micro-batch. |
-| `--grad-accum` | 1 | Effective batch = `batch_size × grad_accum`. |
-| `--lr` | 9e-4 | Peak LR (warmup + cosine decay to `--min-lr`). |
-| `--time-budget` | 0 | Stop after N minutes (0 = none). |
-| `--resume` | – | Continue from `last.pt` with optimizer state. |
+| `--config` | – | `configs/spore_12m.json` or `spore_36m.json`. |
+| `--stage` | `pretrain` | `pretrain` then `sft`. |
+| `--token-budget` | – | Total tokens for the stage; steps are derived from it. |
+| `--chunk-minutes` | 0 | Stop after N minutes and save (0 = run to completion). |
+| `--export` | off | Write `weights.json` even if the stage is unfinished. |
+| `--resume` | `last.pt` | Continue from a checkpoint with optimizer + RNG state. |
+| `--early-stop-patience` | 4 | Evals without improvement before stopping. **Ignored under `--chunk-minutes`** — a stage split across jobs must not be killed by one chunk's stall. |
 
-Artefacts land in `runs/main/`:
+Artefacts land in `runs/spore-1-12M/`:
 
 ```
-tokenizer.json    byte-level BPE vocabulary
+tokenizer.json    byte-level BPE vocabulary + control tokens
 config.json       model hyper-parameters
-model.pt          PyTorch checkpoint
+last.pt           fully resumable checkpoint (weights, AdamW, RNG, patience)
 weights.json      float16 export used by the NumPy + JS engines
-meta.json         training metrics
+train_log.json    meta + loss history
 loss_curve.svg    dependency-free chart
-samples.txt       generations at the end of training
+samples.txt       chat samples after SFT
 ```
 
 ---
@@ -255,7 +241,7 @@ samples.txt       generations at the end of training
 ```
 tokens ──▶ Embedding + positional embedding
             │
-            ▼  × 4 blocks
+            ▼  × n_layer (6 at 12M, 12 at 36M)
         ┌──────────────────────────────┐
         │ LayerNorm → Multi-head Attn  │
         │      + residual              │
@@ -267,7 +253,11 @@ tokens ──▶ Embedding + positional embedding
           logits → temperature / top-k / top-p → next token
 ```
 
-One design decision drives the whole repo: **the forward pass is deliberately plain.** No flash attention, no fused kernels, no framework magic. Every operation is a small function that has an exact twin in NumPy and JavaScript. That is why the browser can run the identical model.
+One design decision drives the whole repo: **the forward pass is deliberately
+plain.** No flash attention, no fused kernels, no framework magic. Every
+operation is a small function that has an exact twin in NumPy and JavaScript.
+That is why the browser runs the identical model — the same weights, the same
+sampler, the same stop tokens.
 
 ### Three engines, one model
 
@@ -277,7 +267,7 @@ One design decision drives the whole repo: **the forward pass is deliberately pl
                 └──────┬───────┘
                        │ export_checkpoint()  (fp16 JSON)
                        ▼
-              model/weights.json
+        model/spore/<name>/weights.json
                  │           │
         ┌────────▼──┐   ┌────▼─────────┐
         │  NumPy    │   │ JavaScript   │
@@ -288,18 +278,26 @@ One design decision drives the whole repo: **the forward pass is deliberately pl
 Correctness is enforced by tests, not trust:
 
 * `test_numpy_engine_matches_torch_exactly` — fp32 NumPy logits match PyTorch to `1e-4`.
-* `test_parity.py` — exports logits and a greedy completion from the NumPy engine, runs `scripts/js_parity.mjs` under Node, and requires the JS engine to reproduce them (tokenizer ids, argmaxes and generated text).
+* `test_percent_encoding_of_specials_matches_python_and_js` — the JS tokenizer must produce the same ids as Python for control tokens and arbitrary UTF-8.
+* `test_js_retrieval_matches_python` — BM25 in the browser must rank a query exactly as the server does, or the two demos ground on different passages.
 * `test_kv_cache_matches_full_forward` — the incremental cache used in generation gives the same answer as a full forward pass.
 
-In this repo the measured agreement is **max |Δlogit| ≈ 2e-4** between PyTorch and the browser at float16 weights — i.e. the same model, not a re-implementation that drifts.
+`scripts/spore_smoke.mjs` runs the whole browser stack headless against a real
+checkpoint — tokenizer, factbook, engine, sampling — so "it works in Chrome" is
+not the only evidence that it works.
 
 ### Why bytes and not characters?
 
-The tokenizer learns its merges from the corpus itself. Starting from raw bytes means the vocabulary can encode *any* input — emoji, Unicode, code — without an `<unk>` token, and the same JSON vocabulary works in Python and JS with no BPE libraries. On Tiny Shakespeare it compresses the text ~1.9×; on a bigger corpus it would learn more merges (the vocab size is one config value).
+The tokenizer learns its merges from the corpus itself. Starting from raw bytes means the vocabulary can encode *any* input — emoji, Unicode, code — without an `<unk>` token, and the same JSON vocabulary works in Python and JS with no BPE libraries. On the Spore corpus it compresses English ~2.5×; the vocab size is one config
+value (3010 at 12M, 5210 at 36M).
 
 ### Bits per byte, not just loss
 
-Cross-entropy over tokens is not comparable across tokenizers. The training script also reports **bits per byte** (`val_loss / ln2 / compression_ratio`), the tokenizer-independent metric used by the GPT papers. Random guessing over 256 bytes would be 8.0; a good small Shakespeare model lands around 1.5–1.8.
+Cross-entropy over tokens is not comparable across tokenizers. The trainer also
+reports **bits per byte** (`val_loss / ln2 / compression_ratio`), the
+tokenizer-independent metric used by the GPT papers. Random guessing over 256
+bytes is 8.0; checkpoints in this repo land in the 2–3 range, which is
+respectable for the parameter count and honestly short of a real LM.
 
 ---
 
@@ -311,53 +309,62 @@ tinyllm/              the library
   tokenizer.py        byte-level BPE (train / encode / decode / save)
   model.py            PyTorch GPT + sampling + KV cache
   numpy_engine.py     NumPy inference + checkpoint exporter
-  dataset.py          Tiny Shakespeare loading and batching
+  dataset.py          text loading and batching
   server.py           FastAPI inference server
   cli.py              `python -m tinyllm ...`
   sft.py              chat templates + masked SFT loss
   retrieval.py        BM25 factbook used to ground Spore's answers
 scripts/
-  train.py            CPU training + export + plots + samples
   train_spore.py      two-stage, resumable Spore trainer
   build_spore_data.py WikiText + TinyStories -> prose, Q&A, factbook
-  download_data.py    fetch the dataset
-  serve_web.py        static server for the demo
-  js_parity.mjs       Node harness comparing JS to the Python reference
-web/                  zero-dependency browser demo
-  index.html, style.css, app.js     TinyGPT demo
-  spore.html, spore.js, spore.css   Spore chat demo
+  download_data.py    fetch the raw corpus
+  serve_web.py        static server for the playground
+  spore_smoke.mjs     headless end-to-end check of the browser stack
+web/                  the Spore playground (this is the whole site)
+  index.html          the chat page
+  spore.js            UI: model discovery, prompt rendering, streaming
+  style.css           styles (self-contained)
   engine.js           transformer forward pass in JavaScript
   tokenizer.js        BPE port (special tokens included)
   retrieval.js        BM25 port, identical ranking to the Python version
   worker.js           Web Worker wrapper
-tests/                pytest suite (unit + cross-engine parity + API)
-configs/              model shapes
-data/                 tinyshakespeare.txt, raw_wikitext2.txt, raw_tinystories.txt
-  spore/              generated prose, qa.jsonl, factbook.json
+tests/                pytest suite (unit + continuation + API)
+configs/              spore_12m.json, spore_36m.json
+data/                 raw_wikitext2.txt, raw_tinystories.txt
+  spore/              generated prose, qa.jsonl, factbook.json (gitignored)
 model/                trained artefacts (committed by CI)
   spore/<name>/       Spore checkpoints + meta + samples
-.github/workflows/    train.yml, train_spore.yml, test.yml, pages.yml
+.github/workflows/    train_spore.yml, test.yml, pages.yml
 ```
 
 ## Going bigger
 
 The design does not care how large the model is. To scale:
 
-1. Edit `configs/small.json` (or add a new config) — e.g. `n_layer: 6, n_embd: 384, block_size: 256`.
-2. Point the workflow at it, or pass it to `scripts/train.py`.
-3. Increase `--max-steps` and `--time-budget`.
+1. Add a config modelled on `configs/spore_36m.json` — the shape is the only input.
+2. Add it to the `model` choice list in `.github/workflows/train_spore.yml`.
+3. Raise `target_tokens`.
 
-On a GitHub runner expect roughly 2 000–3 000 tokens/s; a 6M-parameter model at 10k steps is a comfortable overnight-ish run split over the checkpoint cache. Beyond ~20M parameters you will want a GPU runner (`runs-on: [self-hosted, gpu]`), but nothing else changes — and the exported JSON format would want a binary variant for the browser.
+Measured on a 2-core `ubuntu-latest` runner: **1,235 tok/s at 12M** and
+**579 tok/s at 36M**. Beyond ~100M you want a GPU runner
+(`runs-on: [self-hosted, gpu]`), and the exported JSON would want a binary
+format for the browser.
 
 ## Honest limitations
 
-* **It's a tiny model.** No instruction following, no reasoning, no facts. It continues Shakespeare-flavoured text.
-* **CPU training only.** Throughput is ~2.5k tokens/s; this is why the shipped model is small.
-* **The browser engine is single-threaded.** On the 3.5M model expect tens of tokens/second depending on hardware — fast enough to watch, not fast enough for a chat product.
-* **Float16 weights.** Chosen so the browser payload stays ~9 MB for 3.5M parameters. The quality cost is nil for generation; the parity tests quantify it.
+* **It's a tiny model.** It answers questions *when retrieval hands it the right
+  passage*. It does not reason, and it will be visibly rough on anything open-ended.
+* **Retrieval is load-bearing.** Turn it off and the answers degrade to fluent
+  nonsense — that is the honest ceiling of 12M parameters, not a bug.
+* **CPU training only.** ~1.2k tok/s at 12M is why the shipped models are small.
+* **The browser engine is single-threaded.** ~35 tok/s at 12M on a laptop —
+  fast enough to watch, not fast enough for a chat product.
+* **Float16 weights.** A 12M model is a 32 MB JSON in the repo. Fine for a demo;
+  a binary format would be ~4× smaller.
 
 ## License
 
-Code MIT. Tiny Shakespeare is public domain (it is in the `data/` folder verbatim from [karpathy/char-rnn](https://github.com/karpathy/char-rnn)).
+Code MIT. WikiText-2 is CC BY-SA 3.0; TinyStories is CDLA-Sharing-1.0. Both are
+committed as raw text under `data/` so training needs no network access.
 
 <div align="center"><sub>Built end-to-end by an AI agent on Arena.ai · no pretrained weights were harmed</sub></div>

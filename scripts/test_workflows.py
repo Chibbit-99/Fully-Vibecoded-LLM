@@ -59,15 +59,13 @@ EXPR = re.compile(r"\$\{\{[^}]*\}\}")
 def substitute(script: str) -> str:
     """Replace ${{ ... }} expressions with deterministic defaults."""
     defaults = {
-        "inputs.config": "configs/fast.json",
-        "inputs.max_steps": "4000",
-        "inputs.batch_size": "32",
-        "inputs.seed": "1337",
-        "inputs.chunk_minutes": "25",
+        "inputs.model": "spore-1-12M",
+        "inputs.stage": "pretrain",
+        "inputs.target_tokens": "1000",
+        "inputs.chunk_minutes": "1",
         "github.ref_name": "main",
         "github.run_number": "1",
         "github.run_id": "1",
-        "inputs.clear_checkpoints": "false",
         "inputs.reset": "false",
     }
 

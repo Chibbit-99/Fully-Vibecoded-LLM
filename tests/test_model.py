@@ -242,20 +242,29 @@ def test_checkpoint_is_written_at_end_of_a_chunk(tmp_path):
 
     from tinyllm.tokenizer import ByteBPE as _Tok
 
-    data = Path(__file__).resolve().parent.parent / "data" / "tinyshakespeare.txt"
+    root = Path(__file__).resolve().parent.parent
+    data = root / "data" / "tinyshakespeare.txt"
     if not data.exists():
         pytest.skip("dataset not available")
-    tok = _Tok([(97, 98)])
-    tok.save(tmp_path / "tokenizer.json")
+    text = data.read_text(encoding="utf-8")
+    (tmp_path / "prose_train.txt").write_text(text[:4000], encoding="utf-8")
+    (tmp_path / "prose_val.txt").write_text(text[4000:5000], encoding="utf-8")
+    import json as _json
+    cfg = tmp_path / "tiny.json"
+    cfg.write_text(_json.dumps({
+        "name": "spore-test-tiny", "vocab_size": 300, "block_size": 32,
+        "n_layer": 1, "n_head": 2, "n_embd": 32,
+    }))
 
     cmd = [
-        sys.executable, str(Path(__file__).resolve().parent.parent / "scripts" / "train.py"),
-        "--out-dir", str(tmp_path), "--tokenizer", str(tmp_path / "tokenizer.json"),
-        "--max-steps", "9", "--batch-size", "2", "--block-size", "16",
-        "--n-layer", "1", "--n-head", "2", "--n-embd", "8",
+        sys.executable, str(root / "scripts" / "train_spore.py"),
+        "--out-dir", str(tmp_path), "--data-dir", str(tmp_path),
+        "--config", str(cfg),
+        "--stage", "pretrain", "--max-steps", "9",
+        "--batch-size", "2", "--threads", "1",
         "--save-interval", "500",  # deliberately never hits a boundary
         "--log-interval", "9", "--eval-interval", "9", "--eval-batches", "1",
-        "--warmup", "1",
+        "--warmup", "1", "--smoke",
     ]
     subprocess.run(cmd, check=True, capture_output=True, timeout=300)
 
@@ -307,7 +316,7 @@ def test_workflow_publishes_before_gating_on_tests():
     yaml = pytest.importorskip("yaml")
 
     root = Path(__file__).resolve().parent.parent
-    data = yaml.safe_load((root / ".github" / "workflows" / "train.yml").read_text())
+    data = yaml.safe_load((root / ".github" / "workflows" / "train_spore.yml").read_text())
     step_names = [s.get("name", "") for s in data["jobs"]["train"]["steps"]]
 
     def index_of(fragment: str) -> int:
@@ -337,24 +346,22 @@ def test_lr_schedule_uses_absolute_target_not_chunk_bound():
     each chunk replayed warmup/decay against a different horizon and the model
     decayed into overfitting (val loss rose 2.83 -> 3.90 on the first CI run).
     """
-    import argparse
+    from scripts.train_spore import lr_at
 
-    from scripts.train import lr_at
+    BASE, FLOOR, WARMUP, TOTAL = 1e-3, 1e-4, 100, 4000
 
-    def args_for(**kw):
-        base = dict(lr=1e-3, min_lr=1e-4, warmup=100, max_steps=4000)
-        base.update(kw)
-        return argparse.Namespace(**base)
+    def lr(step: int, total: int = TOTAL) -> float:
+        return lr_at(step, WARMUP, total, BASE, FLOOR)
 
-    full = args_for()
-    # a chunk that only plans to run 700 steps must still report the LR that the
-    # 4000-step schedule dictates at that absolute position
-    chunk = args_for(max_steps=700, total_steps=4000)
+    # The schedule is a pure function of (absolute step, stage total). A chunk
+    # that only plans to run 700 steps must still report the LR that the
+    # 4000-step schedule dictates at that absolute position — which is exactly
+    # what makes continuation exact.
+    for step in (0, 50, 100, 350, 699, 2000):
+        assert abs(lr(step) - lr_at(step, WARMUP, TOTAL, BASE, FLOOR)) < 1e-12, step
 
-    for step in (0, 50, 100, 350, 699):
-        assert abs(lr_at(step, chunk) - lr_at(step, full)) < 1e-12, step
-
-    # and the curve must actually decay
-    assert lr_at(0, full) < lr_at(1000, full) > lr_at(4000, full)
-    # warmup ramps up
-    assert lr_at(0, full) < lr_at(50, full) < lr_at(100, full)
+    # warmup ramps up, then decay falls away
+    assert lr(0) < lr(50) < lr(100)
+    assert lr(100) > lr(2000) > lr(TOTAL)
+    # the floor is respected
+    assert lr(TOTAL) >= FLOOR - 1e-12
