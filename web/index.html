@@ -3,112 +3,124 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>TinyLLM — a GPT in your browser</title>
-    <meta name="description" content="A GPT written from scratch, trained on Tiny Shakespeare by GitHub Actions, running fully client-side in JavaScript." />
-    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🪶</text></svg>" />
+    <title>Spore — a 12M/36M chat model in your browser</title>
+    <meta
+      name="description"
+      content="Spore is a small language model trained from scratch by GitHub Actions on Wikipedia and TinyStories, then chat-tuned. It answers questions by grounding on a retrieved passage. Runs fully client-side."
+    />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🌱</text></svg>" />
     <link rel="stylesheet" href="style.css" />
   </head>
-  <body>
+  <body class="spore">
     <div class="bg-glow"></div>
+
     <header>
       <div class="brand">
-        <span class="logo">🪶</span>
+        <span class="logo">🌱</span>
         <div>
-          <h1>TinyLLM</h1>
-          <p class="tagline">a GPT written from scratch&nbsp;· trained by GitHub Actions&nbsp;· runs in your browser</p>
+          <h1>Spore</h1>
+          <p class="tagline">
+            a chat model written from scratch&nbsp;· trained by GitHub Actions&nbsp;· runs in your browser
+          </p>
         </div>
       </div>
       <div class="badges" id="badges">
-        <span class="badge" id="badge-params">loading…</span>
-        <span class="badge" id="badge-config">–</span>
+        <span class="badge" id="badge-model">loading…</span>
+        <span class="badge" id="badge-params">–</span>
         <span class="badge" id="badge-val">–</span>
+        <span class="badge" id="badge-context">–</span>
       </div>
     </header>
 
     <main>
-      <section class="card">
-        <div class="row">
-          <label for="prompt">Prompt</label>
-          <button id="shuffle" class="ghost small" title="Random Shakespeare-style prompt">🎲 surprise me</button>
+      <section class="card chat-card">
+        <div class="model-picker" id="model-picker" hidden>
+          <label for="modelSelect">Model</label>
+          <select id="modelSelect"></select>
+          <span class="hint" id="picker-hint"></span>
         </div>
-        <textarea id="prompt" spellcheck="false" rows="3">ROMEO:</textarea>
 
-        <div class="controls">
-          <div class="control">
-            <label for="maxTokens">Tokens <output id="maxTokensOut">180</output></label>
-            <input type="range" id="maxTokens" min="16" max="600" step="8" value="180" />
-          </div>
-          <div class="control">
-            <label for="temperature">Temperature <output id="temperatureOut">0.85</output></label>
-            <input type="range" id="temperature" min="0.1" max="1.5" step="0.05" value="0.85" />
-          </div>
-          <div class="control">
-            <label for="topK">Top-k <output id="topKOut">40</output></label>
-            <input type="range" id="topK" min="0" max="200" step="5" value="40" />
-          </div>
-          <div class="control">
-            <label for="topP">Top-p <output id="topPOut">0.95</output></label>
-            <input type="range" id="topP" min="0.1" max="1" step="0.01" value="0.95" />
+        <div id="transcript" class="transcript" aria-live="polite">
+          <div class="empty-state" id="empty-state">
+            <p class="big">Ask Spore something.</p>
+            <p class="muted">
+              It is a very small model (12M or 36M parameters). It answers best when a
+              passage from its training data is retrieved and shown to it first — that is
+              what the <em>grounding</em> toggle below does.
+            </p>
           </div>
         </div>
 
-        <div class="actions">
-          <button id="generate" class="primary" disabled>Generate</button>
-          <button id="stop" class="ghost" disabled>Stop</button>
-          <label class="check"><input type="checkbox" id="seedLock" checked /> fixed seed</label>
-          <span class="stats" id="stats"></span>
+        <div class="suggestions" id="suggestions"></div>
+
+        <form id="composer" class="composer">
+          <textarea
+            id="input"
+            rows="2"
+            placeholder="Ask a question… (Enter to send, Shift+Enter for a new line)"
+            autocomplete="off"
+            spellcheck="false"
+          ></textarea>
+          <button id="send" type="submit" class="primary">Send</button>
+          <button id="stop" type="button" class="ghost" hidden>Stop</button>
+        </form>
+
+        <div class="chat-controls">
+          <div class="control">
+            <label for="temperature">Temperature <output id="temperatureOut">0.7</output></label>
+            <input type="range" id="temperature" min="0.1" max="1.3" step="0.05" value="0.7" />
+          </div>
+          <div class="control">
+            <label for="maxTokens">Max tokens <output id="maxTokensOut">120</output></label>
+            <input type="range" id="maxTokens" min="16" max="400" step="8" value="120" />
+          </div>
+          <label class="toggle">
+            <input type="checkbox" id="grounding" checked />
+            <span>Ground on retrieved passage</span>
+          </label>
+          <button id="reset" type="button" class="ghost small">↺ new chat</button>
         </div>
+
+        <p class="status" id="status">Loading the model…</p>
       </section>
 
-      <section class="card output-card">
-        <div class="row">
-          <label>Output</label>
-          <span class="hint" id="engine-hint">pretrained weights · float16 · no server, no GPU</span>
-        </div>
-        <pre id="output" class="output"><span class="muted">↑ press Generate to complete your prompt with the model. Everything — tokenizer, attention, sampling — happens on your machine.</span></pre>
-        <div class="progress"><div class="bar" id="progress"></div></div>
-        <div class="token-strip-wrap">
-          <div class="strip-head">
-            <label>Token stream</label>
-            <span class="hint">each block is one BPE token the model emitted</span>
-          </div>
-          <div class="token-strip" id="tokenStrip"></div>
-        </div>
-      </section>
-
-      <details class="card about">
-        <summary>How does this work?</summary>
-        <div class="about-body">
-          <p>
-            This is a <strong>decoder-only transformer</strong> (the GPT architecture) implemented from scratch —
-            no HuggingFace, no PyTorch in the browser. It has <strong id="about-params">–</strong> parameters,
-            a byte-level BPE vocabulary of <strong id="about-vocab">–</strong> tokens and a context window of
-            <strong id="about-ctx">–</strong> tokens.
-          </p>
-          <ul>
-            <li><code>tinyllm/tokenizer.py</code> — byte-level BPE trained from scratch, ported line-for-line to <code>web/tokenizer.js</code>.</li>
-            <li><code>tinyllm/model.py</code> — causal self-attention, pre-LayerNorm blocks, GELU-tanh MLP, weight-tied head.</li>
-            <li><code>.github/workflows/train.yml</code> — GitHub Actions trains it on CPU, exports <code>model/weights.json</code>.</li>
-            <li><code>web/engine.js</code> — the same forward pass in JavaScript with an incremental KV cache.</li>
-            <li><code>tinyllm/server.py</code> — a FastAPI server exposing the identical model over HTTP.</li>
-          </ul>
-          <p class="muted">
-            Trained on <a href="https://github.com/karpathy/char-rnn">Tiny Shakespeare</a> (public domain),
-            validation loss <span id="about-val">–</span> nats/token. The model babbles Shakespeare-flavoured English:
-            it has 4M parameters and no idea what words mean. That is the point of the experiment.
-          </p>
-        </div>
-      </details>
+      <aside class="card about-card">
+        <h2>How it works</h2>
+        <ol class="steps">
+          <li>
+            <strong>Retrieve.</strong> Your question is matched against a factbook of
+            passages built from the training corpus (BM25, in your browser).
+          </li>
+          <li>
+            <strong>Render.</strong> The passage and question become a chat prompt:
+            <code>&lt;|user|&gt;…&lt;|context|&gt;…&lt;|assistant|&gt;</code>
+          </li>
+          <li>
+            <strong>Generate.</strong> The transformer runs here, token by token, and
+            stops when it emits <code>&lt;|end|&gt;</code>.
+          </li>
+        </ol>
+        <h2>What it is not</h2>
+        <p class="muted small">
+          Spore has no knowledge beyond a few megabytes of Wikipedia and children's
+          stories, and no ability to reason. If it says something wrong, that is
+          expected — every weight was trained from scratch on two CPU cores.
+        </p>
+        <h2>Details</h2>
+        <dl class="details">
+          <dt>Parameters</dt><dd id="about-params">–</dd>
+          <dt>Vocabulary</dt><dd id="about-vocab">–</dd>
+          <dt>Context</dt><dd id="about-ctx">–</dd>
+          <dt>Validation loss</dt><dd id="about-val">–</dd>
+          <dt>Retrieval</dt><dd id="about-retrieval">–</dd>
+        </dl>
+      </aside>
     </main>
 
     <footer>
-      <span id="load-status">Loading weights…</span>
-      <span>
-        <a href="https://github.com/Chibbit-99/Fully-Vibecoded-LLM">source</a> ·
-        <a href="https://github.com/Chibbit-99/Fully-Vibecoded-LLM/actions">training runs</a>
-      </span>
+      <span>Weights and tokenizer are fetched from <code>model/spore/</code>. No server, no API key.</span>
     </footer>
 
-    <script type="module" src="app.js"></script>
+    <script type="module" src="spore.js"></script>
   </body>
 </html>

@@ -268,10 +268,10 @@ curl -s localhost:8000/api/health      # params, chat mode, retrieval status
 ```bash
 python -m tinyllm.server --checkpoint spore-1-12M --port 8000
 # open http://localhost:8000/         -> Spore chat
-#      http://localhost:8000/shakespeare.html -> the original demo
+
 ```
 
-Or open `web/spore.html` through any static server after the model is published
+Or open the site through any static server after the model is published
 (GitHub Pages does this automatically on push to `main`). The whole model runs in
 a Web Worker: the 12M checkpoint loads in about 200 ms and generates at roughly
 35 tokens/second on a laptop.
@@ -315,5 +315,5 @@ masked tokens are the only ones counted.
 | `tinyllm/sft.py` | chat templates, SFT masking, window filtering |
 | `tinyllm/retrieval.py` | BM25 factbook + `context_for()` |
 | `.github/workflows/train_spore.yml` | the training workflow described above |
-| `web/spore.html`, `web/spore.js`, `web/retrieval.js` | the browser demo |
+| `web/index.html`, `web/spore.js`, `web/retrieval.js` | the playground |
 | `tests/test_spore.py` | 25 tests: tokenizer, corpus quality, sizing, resuming |

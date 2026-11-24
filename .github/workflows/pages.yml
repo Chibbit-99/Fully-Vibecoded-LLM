@@ -39,25 +39,25 @@ jobs:
 
       - name: Check model artefacts exist
         run: |
-          test -f model/weights.json || (echo "::error::model/weights.json missing — run the Train workflow first" && exit 1)
-          du -h model/weights.json
-          # Spore is optional: the page degrades gracefully without it, but say
-          # so loudly in the log rather than shipping a dead demo link.
+          # The site is the Spore playground: web/ + model/spore/ + the factbook.
+          # Without a checkpoint the page still deploys and shows a setup
+          # message, so this warns rather than fails.
           if ls model/spore/*/weights.json >/dev/null 2>&1; then
-            echo "Spore checkpoints:"; ls -la model/spore/*/weights.json
+            echo "Spore checkpoints:"
+            du -h model/spore/*/weights.json
           else
-            echo "::warning::no model/spore/*/weights.json — the Spore demo will show a setup message"
+            echo "::warning::no model/spore/*/weights.json — the playground will show a setup message"
           fi
+          test -f data/spore/factbook.json || (echo "::error::factbook missing; the build step should have created it" && exit 1)
 
       - name: Assemble site
         run: |
           set -euo pipefail
-          mkdir -p _site/model
+          mkdir -p _site
+          # web/ is the whole site: index.html is the Spore playground.
           cp -r web/. _site/
-          cp model/weights.json _site/model/weights.json
-          if [ -f model/meta.json ]; then cp model/meta.json _site/model/meta.json; fi
 
-          # Spore chat models + the factbook the browser retrieves from
+          # Spore checkpoints + the factbook the browser retrieves from
           if [ -d model/spore ]; then
             mkdir -p _site/model/spore
             cp -r model/spore/. _site/model/spore/
@@ -66,9 +66,6 @@ jobs:
             mkdir -p _site/data/spore
             cp data/spore/factbook.json _site/data/spore/factbook.json
           fi
-          # the Pages layout puts everything at the site root, so spore.html
-          # must also be reachable at index.html for convenience
-          if [ -f _site/spore.html ]; then cp _site/spore.html _site/spore/index.html 2>/dev/null || true; fi
           touch _site/.nojekyll
           du -sh _site _site/model 2>/dev/null || true
 

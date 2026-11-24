@@ -1,3 +1,8 @@
+/* Spore playground styles.
+   The first block is the subset of the original shared theme the page
+   uses (:root variables, header chrome, cards, badges, buttons); the rest
+   is Spore-specific. Self-contained on purpose: web/ is the whole site. */
+
 :root {
   --bg: #0b0d12;
   --panel: #12161f;
@@ -12,17 +17,6 @@
   --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
 }
 
-* { box-sizing: border-box; }
-
-html, body {
-  margin: 0;
-  padding: 0;
-  background: var(--bg);
-  color: var(--text);
-  font-family: var(--sans);
-  min-height: 100%;
-}
-
 .bg-glow {
   position: fixed;
   inset: 0;
@@ -33,25 +27,14 @@ html, body {
   z-index: 0;
 }
 
-header, main, footer { position: relative; z-index: 1; }
-
-header {
-  max-width: 980px;
-  margin: 0 auto;
-  padding: 38px 22px 10px;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 18px;
-  align-items: center;
-  justify-content: space-between;
-}
-
 .brand { display: flex; gap: 14px; align-items: center; }
+
 .logo { font-size: 34px; filter: drop-shadow(0 0 12px rgba(122,162,255,.5)); }
-h1 { margin: 0; font-size: 22px; letter-spacing: -0.02em; }
+
 .tagline { margin: 2px 0 0; color: var(--muted); font-size: 12.5px; }
 
 .badges { display: flex; gap: 8px; flex-wrap: wrap; }
+
 .badge {
   font-family: var(--mono);
   font-size: 11px;
@@ -62,16 +45,6 @@ h1 { margin: 0; font-size: 22px; letter-spacing: -0.02em; }
   color: var(--muted);
   white-space: nowrap;
 }
-.badge.ok { color: var(--accent-2); border-color: rgba(74, 222, 128, 0.35); }
-.badge.loading { color: var(--accent); }
-
-main {
-  max-width: 980px;
-  margin: 0 auto;
-  padding: 14px 22px 40px;
-  display: grid;
-  gap: 16px;
-}
 
 .card {
   background: linear-gradient(180deg, var(--panel), var(--panel-2));
@@ -81,170 +54,268 @@ main {
   box-shadow: 0 20px 50px -30px rgba(0, 0, 0, 0.9);
 }
 
-.row { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 8px; }
-label { font-size: 12.5px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }
-output { font-family: var(--mono); color: var(--accent); }
-
-textarea {
-  width: 100%;
-  resize: vertical;
-  min-height: 84px;
-  background: #0a0d13;
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  color: var(--text);
-  font-family: var(--mono);
-  font-size: 14.5px;
-  line-height: 1.55;
-  padding: 13px 14px;
-  outline: none;
-  transition: border-color 0.15s;
-}
-textarea:focus { border-color: var(--accent); }
-
-.controls {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-  gap: 6px 22px;
-  margin: 16px 0 4px;
-}
-.control { display: flex; flex-direction: column; gap: 6px; }
-.control label { display: flex; justify-content: space-between; }
-
-input[type="range"] {
-  -webkit-appearance: none;
-  appearance: none;
-  width: 100%;
-  height: 4px;
-  border-radius: 999px;
-  background: #263042;
-  outline: none;
-}
-input[type="range"]::-webkit-slider-thumb {
-  -webkit-appearance: none;
-  width: 15px; height: 15px;
-  border-radius: 50%;
-  background: var(--accent);
-  cursor: pointer;
-  box-shadow: 0 0 0 4px rgba(122, 162, 255, 0.15);
-}
-input[type="range"]::-moz-range-thumb {
-  width: 15px; height: 15px; border: none; border-radius: 50%;
-  background: var(--accent); cursor: pointer;
-}
-
-.actions { display: flex; align-items: center; gap: 12px; margin-top: 16px; flex-wrap: wrap; }
-button {
-  font-family: var(--sans);
-  font-size: 14px;
-  font-weight: 600;
-  border-radius: 10px;
-  padding: 10px 20px;
-  cursor: pointer;
-  border: 1px solid transparent;
-  transition: transform 0.08s, background 0.15s, opacity 0.15s;
-}
-button:active { transform: translateY(1px); }
-button.primary { background: var(--accent); color: #0a0d13; }
-button.primary:hover:not(:disabled) { background: #93b4ff; }
-button.ghost { background: transparent; border-color: var(--border); color: var(--text); }
-button.ghost:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
-button.small { padding: 5px 11px; font-size: 12px; text-transform: none; letter-spacing: 0; }
-button:disabled { opacity: 0.45; cursor: not-allowed; }
-
-.check { display: flex; align-items: center; gap: 6px; text-transform: none; letter-spacing: 0; font-size: 12.5px; cursor: pointer; }
-.check input { accent-color: var(--accent); }
-
-.stats { margin-left: auto; font-family: var(--mono); font-size: 12px; color: var(--muted); }
-
-.output-card { min-height: 280px; display: flex; flex-direction: column; }
-.hint { font-size: 11.5px; color: var(--muted); font-family: var(--mono); }
-.output {
-  flex: 1;
-  margin: 0;
-  white-space: pre-wrap;
-  word-break: break-word;
-  font-family: var(--mono);
-  font-size: 14.5px;
-  line-height: 1.6;
-  background: #0a0d13;
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  padding: 14px 16px;
-  max-height: 460px;
-  overflow-y: auto;
-}
-.output .prompt-part { color: var(--muted); }
-.output .new-part { color: var(--text); }
-.output .caret {
-  display: inline-block;
-  width: 8px;
-  height: 1.05em;
-  vertical-align: text-bottom;
-  background: var(--accent);
-  animation: blink 1s steps(2, start) infinite;
-}
 @keyframes blink { to { visibility: hidden; } }
+
 .muted { color: var(--muted); }
-
-.progress { height: 3px; margin-top: 10px; background: #1a2130; border-radius: 999px; overflow: hidden; }
-.progress .bar { height: 100%; width: 0%; background: linear-gradient(90deg, var(--accent), var(--accent-2)); transition: width 0.12s linear; }
-
-.about summary { cursor: pointer; font-size: 13px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }
-.about-body { font-size: 13.5px; line-height: 1.65; color: #c3c9d8; margin-top: 12px; }
-.about-body ul { padding-left: 20px; }
-.about-body li { margin: 5px 0; }
-.about-body code { font-family: var(--mono); font-size: 12.5px; background: #0a0d13; border: 1px solid var(--border); padding: 1px 6px; border-radius: 6px; }
-.about-body a, footer a { color: var(--accent); text-decoration: none; }
-.about-body a:hover, footer a:hover { text-decoration: underline; }
-
-footer {
-  max-width: 980px;
-  margin: 0 auto;
-  padding: 0 22px 40px;
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  flex-wrap: wrap;
-  font-size: 12px;
-  color: var(--muted);
-  font-family: var(--mono);
-}
-
-.error { color: var(--danger); }
 
 @media (max-width: 560px) {
   header { padding-top: 24px; }
   .stats { margin-left: 0; width: 100%; }
 }
 
-.token-strip-wrap { margin-top: 14px; }
-.strip-head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; margin-bottom: 6px; }
-.token-strip {
+@keyframes tokIn { from { opacity: 0; transform: translateY(-2px); } to { opacity: 1; } }
+
+/* Spore chat demo — builds on style.css, adds only what chat needs. */
+
+body.spore main {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 340px;
+  gap: 18px;
+  align-items: start;
+}
+
+@media (max-width: 900px) {
+  body.spore main {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.chat-card {
+  display: flex;
+  flex-direction: column;
+  min-height: 62vh;
+  gap: 12px;
+}
+
+.transcript {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  overflow-y: auto;
+  max-height: 52vh;
+  padding: 4px 4px 8px;
+  scroll-behavior: smooth;
+}
+
+.empty-state {
+  margin: auto;
+  text-align: center;
+  max-width: 42ch;
+  padding: 24px 8px;
+}
+
+.empty-state .big {
+  font-size: 1.15rem;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+.msg {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  animation: fade-in 0.18s ease-out;
+}
+
+@keyframes fade-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: none; }
+}
+
+.msg .avatar {
+  flex: 0 0 28px;
+  height: 28px;
+  border-radius: 8px;
+  display: grid;
+  place-items: center;
+  font-size: 15px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.msg .bubble {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 12px;
+  padding: 9px 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.5;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.msg.user .bubble {
+  background: rgba(88, 166, 255, 0.12);
+  border-color: rgba(88, 166, 255, 0.22);
+}
+
+.msg.assistant .bubble {
+  background: rgba(57, 211, 83, 0.07);
+  border-color: rgba(57, 211, 83, 0.18);
+}
+
+.msg .caret {
+  display: inline-block;
+  width: 7px;
+  height: 1em;
+  margin-left: 2px;
+  vertical-align: text-bottom;
+  background: #39d353;
+  animation: blink 1s steps(2, start) infinite;
+}
+
+@keyframes blink {
+  to { visibility: hidden; }
+}
+
+.grounded {
+  margin-top: 8px;
+  border-top: 1px dashed rgba(255, 255, 255, 0.1);
+  padding-top: 7px;
+  font-size: 0.78rem;
+  color: var(--muted, #8b949e);
+}
+
+.grounded summary {
+  cursor: pointer;
+  user-select: none;
+}
+
+.grounded blockquote {
+  margin: 6px 0 0;
+  padding-left: 8px;
+  border-left: 2px solid rgba(88, 166, 255, 0.35);
+  font-style: italic;
+  white-space: pre-wrap;
+}
+
+.suggestions {
   display: flex;
   flex-wrap: wrap;
-  gap: 3px;
-  max-height: 118px;
-  overflow-y: auto;
-  padding: 8px;
-  background: #0a0d13;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  min-height: 38px;
+  gap: 6px;
 }
-.token-strip .tok {
-  font-family: var(--mono);
-  font-size: 11.5px;
-  line-height: 1;
-  padding: 4px 5px;
-  border-radius: 5px;
-  background: #1b2433;
-  color: #cbd5e6;
-  white-space: pre;
-  border: 1px solid #263247;
-  animation: tokIn 0.18s ease-out;
+
+.suggestions button {
+  font-size: 0.8rem;
+  padding: 4px 9px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: inherit;
+  cursor: pointer;
 }
-.token-strip .tok.ws { color: #6b7a94; background: #151d29; }
-.token-strip .tok.special { color: var(--accent); border-color: rgba(122,162,255,.4); }
-.token-strip .empty { color: var(--muted); font-size: 12px; font-family: var(--mono); }
-@keyframes tokIn { from { opacity: 0; transform: translateY(-2px); } to { opacity: 1; } }
+
+.suggestions button:hover {
+  background: rgba(88, 166, 255, 0.15);
+}
+
+.composer {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 8px;
+  align-items: end;
+}
+
+.composer textarea {
+  resize: vertical;
+  min-height: 44px;
+  max-height: 160px;
+}
+
+.chat-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  align-items: center;
+  border-top: 1px solid rgba(255, 255, 255, 0.07);
+  padding-top: 10px;
+}
+
+.chat-controls .control {
+  flex: 1 1 150px;
+  min-width: 130px;
+}
+
+.toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.85rem;
+  cursor: pointer;
+  user-select: none;
+}
+
+.status {
+  font-size: 0.8rem;
+  color: var(--muted, #8b949e);
+  min-height: 1.2em;
+  margin: 0;
+}
+
+.model-picker {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding-bottom: 8px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+.model-picker select {
+  background: rgba(255, 255, 255, 0.06);
+  color: inherit;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  padding: 5px 8px;
+}
+
+.model-picker .hint {
+  font-size: 0.76rem;
+  color: var(--muted, #8b949e);
+}
+
+.about-card .steps {
+  padding-left: 18px;
+  margin: 6px 0 14px;
+  line-height: 1.55;
+  font-size: 0.88rem;
+}
+
+.about-card .steps li {
+  margin-bottom: 8px;
+}
+
+.about-card code {
+  font-size: 0.78em;
+  background: rgba(255, 255, 255, 0.07);
+  padding: 1px 4px;
+  border-radius: 4px;
+  word-break: break-all;
+}
+
+.about-card .details {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 10px;
+  font-size: 0.85rem;
+  margin: 6px 0 14px;
+}
+
+.about-card .details dt {
+  color: var(--muted, #8b949e);
+}
+
+.about-card .details dd {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.warn {
+  background: rgba(255, 196, 0, 0.1);
+  border: 1px solid rgba(255, 196, 0, 0.3);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 0.82rem;
+  line-height: 1.45;
+}

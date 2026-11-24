@@ -1,34 +1,41 @@
-# TinyLLM — convenience targets.
+# TinyLLM / Spore — convenience targets.
 #
 #   make install     create .venv and install everything
-#   make train       train from scratch (CPU, ~90 min at the shipped size)
-#   make export      re-export model/weights.json from the latest checkpoint
+#   make data        build the Spore corpus + retrieval factbook (~2 s)
+#   make train       stage 1 (pretrain) then stage 2 (chat tuning)
+#   make resume      continue an interrupted stage
 #   make test        full test suite
-#   make demo        serve the browser demo (http://localhost:8080/web/)
-#   make serve       serve the HTTP API   (http://localhost:8000)
-#   make sample      generate some text from the CLI
+#   make demo        serve the Spore playground (http://localhost:8080/)
+#   make serve       serve the HTTP API     (http://localhost:8000)
+#   make smoke       headless end-to-end check of the browser stack
+#   make info        model metadata
+#   make lint        validate the GitHub workflows
 #   make clean       remove runs/ and caches
 
 PY ?= .venv/bin/python
 PIP ?= .venv/bin/pip
 PORT ?= 8080
 API_PORT ?= 8000
-CONFIG ?= configs/small.json
-STEPS ?= 2400
+MODEL ?= spore-1-12M
+CONFIG ?= configs/spore_12m.json
+OUT ?= runs/$(MODEL)
+PRETRAIN_TOKENS ?= 40000000
+SFT_TOKENS ?= 12000000
 
-.PHONY: help install tokenizer train resume export test test-fast demo serve sample lint build info clean
+.PHONY: help install data train pretrain sft resume test test-fast demo serve smoke info lint clean
 
 help:
-	@echo "TinyLLM targets:"
+	@echo "Spore targets:"
 	@echo "  install     venv + dependencies"
-	@echo "  tokenizer   train the BPE vocabulary only"
-	@echo "  train       full training run -> runs/main/"
-	@echo "  resume      continue an interrupted run"
-	@echo "  export      publish runs/main -> model/"
-	@echo "  test        all tests (unit + parity + API)"
-	@echo "  demo        serve the browser demo"
+	@echo "  data        build the corpus and factbook"
+	@echo "  train       pretrain then chat-tune (both stages)"
+	@echo "  pretrain    stage 1 only -> $(OUT)/"
+	@echo "  sft         stage 2 only, from stage 1's weights"
+	@echo "  resume      continue an interrupted stage"
+	@echo "  test        all tests"
+	@echo "  demo        serve the browser playground"
 	@echo "  serve       serve the HTTP inference API"
-	@echo "  sample      print sample generations"
+	@echo "  smoke       run the browser stack end-to-end in Node"
 	@echo "  info        model metadata"
 	@echo "  lint        validate the GitHub workflows"
 	@echo "  clean       remove runs/ and __pycache__"
@@ -40,38 +47,31 @@ install: .venv/bin/python
 	$(PIP) install --upgrade pip -q
 	$(PIP) install numpy pytest fastapi uvicorn httpx pyyaml -q
 	$(PIP) install torch --index-url https://download.pytorch.org/whl/cpu 2>/dev/null || $(PIP) install torch
-	@echo "done — run 'make train'"
+	@echo "done — run 'make data' then 'make train'"
 
-tokenizer:
-	$(PY) -c "from tinyllm.tokenizer import ByteBPE; from tinyllm.dataset import load_text; t=ByteBPE.train(load_text(), 1280); t.save('model/tokenizer.json'); print('vocab', t.vocab_size)"
+data:
+	$(PY) scripts/build_spore_data.py
 
-train:
-	@mkdir -p runs/main
-	@[ -f model/tokenizer.json ] && cp model/tokenizer.json runs/main/ || true
-	$(PY) -u scripts/train.py --out-dir runs/main --config $(CONFIG) \
-	  --tokenizer runs/main/tokenizer.json --max-steps $(STEPS)
+pretrain:
+	$(PY) -u scripts/train_spore.py --config $(CONFIG) --out-dir $(OUT) \
+	  --stage pretrain --token-budget $(PRETRAIN_TOKENS) --export
+
+sft:
+	$(PY) -u scripts/train_spore.py --config $(CONFIG) --out-dir $(OUT) \
+	  --stage sft --token-budget $(SFT_TOKENS) --export
+
+train: pretrain sft
 
 resume:
-	$(PY) -u scripts/train.py --out-dir runs/main --config $(CONFIG) \
-	  --tokenizer runs/main/tokenizer.json --max-steps $(STEPS) --resume runs/main/last.pt
-
-# copy the training artefacts into model/ exactly like the CI workflow does
-export:
-	$(PY) -c "import json,shutil,pathlib; \
-runs=pathlib.Path('runs/main'); model=pathlib.Path('model'); model.mkdir(exist_ok=True); \
-shutil.copy(runs/'weights.json', model/'weights.json'); \
-shutil.copy(runs/'config.json', model/'config.json'); \
-shutil.copy(runs/'tokenizer.json', model/'tokenizer.json'); \
-log=json.load(open(runs/'train_log.json')); meta=dict(log['meta']); meta['history']=log['history']; \
-json.dump(meta, open(model/'meta.json','w'), indent=2); \
-[shutil.copy(runs/f, model/f) for f in ('loss_curve.svg','samples.txt') if (runs/f).exists()]; \
-print('published model/')"
+	$(PY) -u scripts/train_spore.py --config $(CONFIG) --out-dir $(OUT) \
+	  --stage pretrain --token-budget $(PRETRAIN_TOKENS) --export \
+	  --resume $(OUT)/last.pt
 
 test:
 	$(PY) -m pytest tests -q
 
 test-fast:
-	$(PY) -m pytest tests/test_tokenizer.py tests/test_model.py -q
+	$(PY) -m pytest tests/test_tokenizer.py tests/test_model.py tests/test_spore.py -q
 
 demo:
 	$(PY) scripts/serve_web.py --port $(PORT)
@@ -79,8 +79,8 @@ demo:
 serve:
 	$(PY) -m tinyllm.server --port $(API_PORT)
 
-sample:
-	$(PY) -m tinyllm generate "ROMEO:" -n 160 -t 0.85
+smoke:
+	node scripts/spore_smoke.mjs
 
 info:
 	$(PY) -m tinyllm info
@@ -89,6 +89,6 @@ lint:
 	$(PY) scripts/validate_workflows.py
 
 clean:
-	rm -rf runs prepare .pytest_cache
+	rm -rf runs .pytest_cache
 	find . -name __pycache__ -type d -prune -exec rm -rf {} +
 	@echo "cleaned"

@@ -1,6 +1,6 @@
 """Command line interface.
 
-    python -m tinyllm generate "ROMEO:" -n 120
+    python -m tinyllm generate "What is water?" -n 120
     python -m tinyllm chat                      # interactive REPL
     python -m tinyllm info                      # model metadata
     python -m tinyllm tokenize "To be, or not to be"
@@ -24,7 +24,7 @@ def load(checkpoint: Path) -> NumpyGPT:
     if not checkpoint.exists():
         raise SystemExit(
             f"checkpoint not found: {checkpoint}\n"
-            "Train one with `python scripts/train.py` or download model/weights.json from the repo."
+            "Train one with `scripts/train_spore.py` or run the Train Spore workflow."
         )
     return NumpyGPT.from_checkpoint(checkpoint)
 
@@ -114,7 +114,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub = p.add_subparsers(dest="command", required=True)
 
     g = sub.add_parser("generate", help="complete a prompt")
-    g.add_argument("prompt", nargs="?", default="ROMEO:")
+    g.add_argument("prompt", nargs="?", default="What is water?")
     g.add_argument("-n", "--max-tokens", type=int, default=120)
     g.add_argument("-t", "--temperature", type=float, default=0.8)
     g.add_argument("--top-k", type=int, default=40)
