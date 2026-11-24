@@ -1,0 +1,13 @@
+{
+  "name": "spore-1-12M",
+  "vocab_size": 3010,
+  "block_size": 512,
+  "n_layer": 6,
+  "n_head": 8,
+  "n_embd": 384,
+  "dropout": 0.0,
+  "bias": true,
+  "tie_weights": true,
+  "gelu_tanh": true,
+  "ln_eps": 1e-05
+}
