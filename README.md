@@ -51,7 +51,7 @@ compute available, and it is why the answers are grounded rather than invented.
 | `spore-1-12M` | 12.00M | sft | 952 | 0.7656 | 3.90M | 2.4ks | complete |
 
 <p align="center"><img src="model/spore/spore-1-12M/loss_curve.svg" alt="spore-1-12M training curve" width="620"></p>
-| `spore-1-36M` | 36.00M | pretrain | 17,578 | 2.3104 | 9.24M | 17.8ks | complete |
+| `spore-1-36M` | 36.00M | sft | 3,706 | 1.2129 | 3.79M | 7.8ks | complete |
 
 <p align="center"><img src="model/spore/spore-1-36M/loss_curve.svg" alt="spore-1-36M training curve" width="620"></p>
 <!-- /SPORE_METRICS -->
