@@ -220,9 +220,19 @@ class GPT(nn.Module):
                 ctx = ctx[:, -self.config.block_size :]
             logits, _, past = self.forward(ctx, past_key_values=past)
             logits = logits[:, -1, :].float()
-            if stop_tokens and int(out[0, -1]) in stop_tokens:
-                break
+            # Sample first, *then* test the new token for a stop marker.  The
+            # order matters: prompts end with <|assistant|>, which is itself in
+            # the stop set, so checking out[0, -1] before sampling looked at the
+            # prompt's own last token and broke out on the very first iteration.
+            # Every completion under this trainer came back empty -- which is
+            # exactly what samples.txt contained, for every run, unnoticed.
+            # NumpyGPT.generate and the browser worker both already sample
+            # first; this now matches them.
             next_id = _sample(logits, temperature, top_k, top_p, gen)
+            if stop_tokens and int(next_id) in stop_tokens:
+                # a control token ends the turn; it is not part of the reply,
+                # so it is not appended (mirrors NumpyGPT.generate)
+                break
             out = torch.cat((out, next_id), dim=1)
         return out
 
