@@ -437,6 +437,20 @@ def chat_samples(model, tokenizer: ByteBPE, args, out_path: Path) -> List[Dict[s
         for s in out:
             f.write("=" * 70 + f"\nPROMPT: {s['prompt']!r}\n" + "-" * 70 + "\n")
             f.write(s["completion"] + "\n\n")
+    # An empty transcript is not cosmetic: it means the model produced nothing
+    # for a plain greeting, which is the single most useful early signal that
+    # something is wrong with the stage.  This went unnoticed for every run
+    # because generate() checked the prompt's own trailing <|assistant|> for a
+    # stop and returned zero tokens -- so samples.txt was empty and nothing
+    # said so.  Make it impossible to miss.
+    empty = [s["prompt"] for s in out if not s["completion"]]
+    if out and len(empty) == len(out):
+        print(f"[warn] all {len(out)} chat samples were EMPTY — the model "
+              f"produced no tokens for any prompt. Check generate()'s stop "
+              f"handling and whether this stage actually trained.", flush=True)
+    elif empty:
+        print(f"[warn] {len(empty)}/{len(out)} chat samples were empty: "
+              f"{empty}", flush=True)
     model.train()
     return out
 

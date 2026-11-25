@@ -365,3 +365,48 @@ def test_lr_schedule_uses_absolute_target_not_chunk_bound():
     assert lr(100) > lr(2000) > lr(TOTAL)
     # the floor is respected
     assert lr(TOTAL) >= FLOOR - 1e-12
+
+
+def test_generate_stops_on_new_token_not_prompt_token(model):
+    """`stop_tokens` must be tested against the token just sampled.
+
+    Regression: generate() tested `out[0, -1]` *before* sampling. If the prompt
+    itself ended with a stop token -- which it always does for Spore, because
+    render_prompt() ends with <|assistant|> and that is in the stop set -- the
+    loop broke on the first iteration and returned zero new tokens. Every
+    chat sample in samples.txt was therefore empty, for every training run, and
+    nothing reported it.
+
+    NumpyGPT.generate and the browser worker already sampled first; only the
+    torch path (used by the trainer) got the order wrong.
+    """
+    model.eval()
+    # stay inside SMALL.vocab_size (300)
+    ids = [10, 20, 30, 250]          # 250 is in the stop set below
+    x = torch.tensor([ids], dtype=torch.long)
+    stop = {250, 251}
+
+    out = model.generate(
+        x, max_new_tokens=8, temperature=0.8, top_k=5, seed=1, stop_tokens=stop
+    )
+    new = out[0].tolist()[len(ids):]
+
+    # the prompt's last token is a stop token; that must NOT stop generation
+    assert ids[-1] in stop, "test setup: prompt must end with a stop token"
+    assert len(new) > 0, (
+        "generate() produced no tokens because the prompt ended with a stop "
+        "token; it is still checking the old token instead of the new one"
+    )
+    # and a sampled stop token must not be included in the output
+    assert all(t not in stop for t in new), (
+        f"a stop token leaked into the output: {new}"
+    )
+
+
+def test_generate_without_stop_tokens_is_unchanged(model):
+    """No stop set -> exactly max_new_tokens are produced (no off-by-one)."""
+    model.eval()
+    ids = [10, 20, 30]
+    x = torch.tensor([ids], dtype=torch.long)
+    out = model.generate(x, max_new_tokens=7, temperature=0.8, top_k=5, seed=1)
+    assert out.size(1) == len(ids) + 7, out.size(1)
